@@ -1,0 +1,77 @@
+from common.modules import direction
+from common.modules import exchanges
+from common.utils.util_func import SeriesTickType
+from trader.backtest.config.params_abstract import ParamsBase
+from common.modules import assets
+import datetime
+
+
+class Params(ParamsBase):
+    exchange = exchanges.bitmex
+    train = True
+    # data_start = ts_start = datetime.datetime(2019, 8, 2)
+    # data_end = ts_end = datetime.datetime(2019, 8, 4, 23, 59, 59)
+    # data_start = ts_start = datetime.datetime(2019, 8, 2)
+    # data_end = ts_end = datetime.datetime(2019, 8, 10, 23, 59, 59)
+    # load_model_from_influx = False
+    # parameter optimization
+    # data_start = ts_start = datetime.datetime(2019, 10, 4)
+    # data_end = ts_end = datetime.datetime(2019, 11, 30, 23, 59, 59)
+    # load_model_from_influx = False
+    # holdout
+    data_start = ts_start = datetime.datetime(2019, 9, 1)
+    data_end = ts_end = datetime.datetime(2019, 11, 30, 23, 59, 59)
+    load_model_from_influx = False
+    asset = assets.ethusd
+    asset_pair = assets.xbtusd
+    series_tick_type = SeriesTickType('volume_usd', 10000, 'volume_usd_10000')
+    ex = None  # 'ex2019-12-30_23-52-54-eurusd'
+    ex_entry = None  # 'ex2020-09-28_01-47-55-ethusd'
+    max_evals = 500
+    use_exec_opt_param = True
+    replace_exec_param_where_scan = False
+    load_from_training_set = False
+    dependency_models = {
+        'volume_usd_10000':
+            {
+                # 'p_y_peak': 'ex2020-08-01_04-33-55-ethusd/model_classification_lgb_rd-n_ts-1596228213.25',
+                # 'p_y_valley': 'ex2020-08-01_04-33-55-ethusd/model_classification_lgb_rd-n_ts-1596228214.375',
+                # 'rl_risk_reward_ls_500_999': 'ex2020-09-28_01-47-55-ethusd/model_regression_lgb_rd-n_horizon-500_decay-0.999_ts-1600600349.809',
+                # 'rl_risk_reward_ls_1000_999': 'ex2020-09-28_01-47-55-ethusd/model_regression_lgb_rd-n_horizon-1000_decay-0.999_ts-1600600349.831',
+                # 'rl_risk_reward_ls_2000_999': 'ex2020-09-28_01-47-55-ethusd/model_regression_lgb_rd-n_horizon-2000_decay-0.999_ts-1600600349.741',
+                # 'rl_risk_reward_ls_4000_999': 'ex2020-09-28_01-47-55-ethusd/model_regression_lgb_rd-n_horizon-4000_decay-0.999_ts-1600600349.842',
+                # 'rl_risk_reward_ls_9999': 'ex2020-09-28_01-47-55-ethusd/model_regression_lgb_rd-n_ts-1601230251.934',
+                # 'rl_risk_reward_ls_999': 'ex2020-09-28_01-47-55-ethusd/model_regression_lgb_rd-n_ts-1601230332.718',
+                'rl_risk_reward_ls_995': 'ex2020-10-20_19-04-11-ethusd/model_regression_lgb_rd-n_ts-1603245630.012',
+                # 'rl_risk_reward_ls_99': 'ex2020-09-28_01-47-55-ethusd/model_regression_lgb_rd-n_ts-1601234729.513',
+            },
+        'second': {}
+    }
+    dependency_normalize = {
+        'volume_usd_10000': {
+            'load_feature': 'ex2020-10-13_00-29-55-ethusd'
+        },
+        # 'second': {
+        #     'load_feature': 'ex2020-09-07_01-40-45-ethusd'
+        # }
+    }
+    load_exit_bins = False
+    num_test_iterations = 5
+    num_training_iterations = 5
+    pnl_model_store_interval = 2  # test all models on validation set
+    store_int = [[]]
+    # Env
+    model_direction = direction.long
+    pair_sym_other = [assets.xbtusd]
+
+    # Entry Exit params
+    # entry_min_delta_rl_risk_reward = 0  # By strategy params
+    # entry_max_slope_rl_risk_reward = 0  # By strategy params
+    # exit_min_delta_rl_risk_reward = 0  # By strategy params
+    # reward_horizon = 2500  # By model params
+    # discount_decay = 0.999  # By model params
+    # discount_decay_min_threshold = 0.01  # By model params
+    use_tick_forecast = False
+
+    # validation
+    store_input_curves = False

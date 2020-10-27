@@ -1,0 +1,49 @@
+2019-02-08T10:08:20.0584264Z TRACE:: Config.Get(): Configuration key not found. Key: data-directory - Using default value: ../../../Data/
+2019-02-08T10:08:20.0594237Z TRACE:: Config.Get(): Configuration key not found. Key: version-id - Using default value: 
+2019-02-08T10:08:20.0594237Z TRACE:: Config.Get(): Configuration key not found. Key: cache-location - Using default value: ../../../Data/
+2019-02-08T10:08:20.0594237Z TRACE:: Engine.Main(): LEAN ALGORITHMIC TRADING ENGINE v2.4.0.0 Mode: RELEASE (64bit)
+2019-02-08T10:08:20.0594237Z TRACE:: Engine.Main(): Started 6:08 PM
+2019-02-08T10:08:23.3942142Z TRACE:: Engine.Main(): Memory 69Mb-App  8Mb-Used  2574Mb-Total
+2019-02-08T10:08:23.3952269Z TRACE:: Config.Get(): Configuration key not found. Key: job-queue-handler - Using default value: 
+2019-02-08T10:08:33.8223275Z TRACE:: Config.Get(): Configuration key not found. Key: data-directory - Using default value: ../../../Data/
+2019-02-08T10:08:33.8223275Z TRACE:: Config.Get(): Configuration key not found. Key: version-id - Using default value: 
+2019-02-08T10:08:33.8223275Z TRACE:: Config.Get(): Configuration key not found. Key: cache-location - Using default value: ../../../Data/
+2019-02-08T10:08:33.8223275Z TRACE:: Engine.Main(): LEAN ALGORITHMIC TRADING ENGINE v2.4.0.0 Mode: RELEASE (64bit)
+2019-02-08T10:08:33.8223275Z TRACE:: Engine.Main(): Started 6:08 PM
+2019-02-08T10:08:34.8241642Z TRACE:: Engine.Main(): Memory 64Mb-App  4Mb-Used  2166Mb-Total
+2019-02-08T10:08:34.8251620Z TRACE:: Config.Get(): Configuration key not found. Key: job-queue-handler - Using default value: 
+2019-02-08T10:18:15.3142542Z TRACE:: Config.Get(): Configuration key not found. Key: data-directory - Using default value: ../../../Data/
+2019-02-08T10:18:15.3152520Z TRACE:: Config.Get(): Configuration key not found. Key: version-id - Using default value: 
+2019-02-08T10:18:15.3152520Z TRACE:: Config.Get(): Configuration key not found. Key: cache-location - Using default value: ../../../Data/
+2019-02-08T10:18:15.3152520Z TRACE:: Engine.Main(): LEAN ALGORITHMIC TRADING ENGINE v2.4.0.0 Mode: RELEASE (64bit)
+2019-02-08T10:18:15.3152520Z TRACE:: Engine.Main(): Started 6:18 PM
+2019-02-08T10:18:18.5851882Z TRACE:: Engine.Main(): Memory 63Mb-App  6Mb-Used  1635Mb-Total
+2019-02-08T10:18:18.5861859Z TRACE:: Config.Get(): Configuration key not found. Key: job-queue-handler - Using default value: 
+2019-02-08T10:31:37.0327143Z TRACE:: Config.Get(): Configuration key not found. Key: data-directory - Using default value: ../../../Data/
+2019-02-08T10:31:37.0327143Z TRACE:: Config.Get(): Configuration key not found. Key: version-id - Using default value: 
+2019-02-08T10:31:37.0327143Z TRACE:: Config.Get(): Configuration key not found. Key: cache-location - Using default value: ../../../Data/
+2019-02-08T10:31:37.0327143Z TRACE:: Engine.Main(): LEAN ALGORITHMIC TRADING ENGINE v2.4.0.0 Mode: RELEASE (64bit)
+2019-02-08T10:31:37.0337121Z TRACE:: Engine.Main(): Started 6:31 PM
+2019-02-08T10:31:40.1317982Z TRACE:: Engine.Main(): Memory 64Mb-App  4Mb-Used  7998Mb-Total
+2019-02-08T10:31:40.1317982Z TRACE:: Config.Get(): Configuration key not found. Key: job-queue-handler - Using default value: 
+2019-02-08T10:32:01.1195811Z TRACE:: Config.Get(): Configuration key not found. Key: data-directory - Using default value: ../../../Data/
+2019-02-08T10:32:01.1195811Z TRACE:: Config.Get(): Configuration key not found. Key: version-id - Using default value: 
+2019-02-08T10:32:01.1195811Z TRACE:: Config.Get(): Configuration key not found. Key: cache-location - Using default value: ../../../Data/
+2019-02-08T10:32:01.1195811Z TRACE:: Engine.Main(): LEAN ALGORITHMIC TRADING ENGINE v2.4.0.0 Mode: RELEASE (64bit)
+2019-02-08T10:32:01.1195811Z TRACE:: Engine.Main(): Started 6:32 PM
+2019-02-08T10:32:02.1362427Z TRACE:: Engine.Main(): Memory 64Mb-App  4Mb-Used  8047Mb-Total
+2019-02-08T10:32:02.1362427Z TRACE:: Config.Get(): Configuration key not found. Key: job-queue-handler - Using default value: 
+2019-02-08T10:32:10.8822773Z TRACE:: Config.Get(): Configuration key not found. Key: data-directory - Using default value: ../../../Data/
+2019-02-08T10:32:10.8822773Z TRACE:: Config.Get(): Configuration key not found. Key: version-id - Using default value: 
+2019-02-08T10:32:10.8822773Z TRACE:: Config.Get(): Configuration key not found. Key: cache-location - Using default value: ../../../Data/
+2019-02-08T10:32:10.8832756Z TRACE:: Engine.Main(): LEAN ALGORITHMIC TRADING ENGINE v2.4.0.0 Mode: RELEASE (64bit)
+2019-02-08T10:32:10.8832756Z TRACE:: Engine.Main(): Started 6:32 PM
+2019-02-08T10:32:11.7854291Z TRACE:: Engine.Main(): Memory 64Mb-App  4Mb-Used  8045Mb-Total
+2019-02-08T10:32:11.7864644Z TRACE:: Config.Get(): Configuration key not found. Key: job-queue-handler - Using default value: 
+2019-02-08T10:32:20.9462989Z TRACE:: Config.Get(): Configuration key not found. Key: data-directory - Using default value: ../../../Data/
+2019-02-08T10:32:20.9462989Z TRACE:: Config.Get(): Configuration key not found. Key: version-id - Using default value: 
+2019-02-08T10:32:20.9462989Z TRACE:: Config.Get(): Configuration key not found. Key: cache-location - Using default value: ../../../Data/
+2019-02-08T10:32:20.9462989Z TRACE:: Engine.Main(): LEAN ALGORITHMIC TRADING ENGINE v2.4.0.0 Mode: RELEASE (64bit)
+2019-02-08T10:32:20.9462989Z TRACE:: Engine.Main(): Started 6:32 PM
+2019-02-08T10:32:21.9068507Z TRACE:: Engine.Main(): Memory 64Mb-App  4Mb-Used  8043Mb-Total
+2019-02-08T10:32:21.9078454Z TRACE:: Config.Get(): Configuration key not found. Key: job-queue-handler - Using default value: 

@@ -1,0 +1,13 @@
+numpy >= 1.17.3
+pandas >= 0.25.3
+click === latest
+xgboost == 0.72
+lightgbm >= 2.1.2  # https://lightgbm.readthedocs.io/en/latest/Installation-Guide.html#build-gpu-version
+hyperopt ~= 0.2.5
+scikit-learn ~= 0.23.2
+talib  # TA-Lib wheel - https://www.lfd.uci.edu/~gohlke/pythonlibs/#ta-lib  see also https://github.com/mrjbq7/ta-lib #win_amd64.whl
+influxdb ~= 5.2.3
+scipy ~= 1.3.2
+requests ~= 2.24.0
+fastapi ~= 0.61.1
+cython ~= 0.29.21
