@@ -1,6 +1,3 @@
-[submodule "trader/train"]
-	path = trader/train
-	url = git@bitbucket.org:sebteam/train.git
 [submodule "ui/website-sebastian-lueneburg"]
 	path = ui/website-sebastian-lueneburg
 	url = git@bitbucket.org:SebastianLuen/website-sebastian-lueneburg.git
