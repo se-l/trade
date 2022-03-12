@@ -25,7 +25,7 @@ from common.utils.pandas_frame_plus import PandasFramePlus
 from common.utils.util_func import to_list, resolve_col_name, get_model_features, rolling_window, standard_params_setup, downside_deviation, SeriesTickType
 from connector.influxdb.influxdb_wrapper import InfluxClientWrapper as Influx
 from common.utils.util_func import reduce_to_intersect_ts
-from common.modules.enums import Direction, Exchanges
+from common.modules.enums import Direction, Exchange
 from common.modules.logger import logger
 from trader.data_loader.config.talib_function_defaults import talib_selected
 from trader.data_loader.load_features import load_features
@@ -266,7 +266,8 @@ class FeatureHub:
         ts_other = ts_other[~ts_other['mid.ts'].duplicated(keep='last')]
         ts_other['ix_other'] = ts_other.index
         ts_other['other'] = True
-        all_ts = pd.concat((ts_base.set_index('mid.ts', drop=True), ts_other.set_index('mid.ts', drop=True)), axis=0).sort_index()
+        # all_ts = pd.concat((ts_base.set_index('mid.ts', drop=True), ts_other.set_index('mid.ts', drop=True)), axis=0).sort_index()
+        all_ts = ts_base.set_index('mid.ts', drop=True).merge(ts_other.set_index('mid.ts', drop=True), left_index=True, right_index=True, how='outer').sort_index()
         c_other = ['ix_other', 'other']
         all_ts = all_ts.iloc[all_ts.index.get_loc(ts_base['mid.ts'].iloc[0]) - 1:
                              all_ts.index.get_loc(ts_base['mid.ts'].iloc[-1]) + 1]
@@ -281,7 +282,7 @@ class FeatureHub:
         return map_ts_base2ix_other
 
     def _exchange_has_trade_data(s):
-        return True if s.params.exchange in [Exchanges.bitmex] else False
+        return True if s.params.exchange in [Exchange.bitmex] else False
 
     def export_mini_arr(self, ix):
         raise NotImplemented

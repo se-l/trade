@@ -7,7 +7,7 @@ import operator
 from itertools import groupby
 from collections import namedtuple
 from common.globals import OHLC
-from common.modules.enums import Exchanges, Assets, Series
+from common.modules.enums import Exchange, Assets, Series
 from common.utils.util_func import reduce_to_intersect_ts, SeriesTickType
 from common.modules.logger import Logger
 from trader.data_loader.config.config import exchange2asset_class, resolution2folder, ccy2folder, resample_sec2resample_str
@@ -79,7 +79,7 @@ def _transform_index(pdf, series_tick_type: SeriesTickType):
 
 
 def _insert_trade_volume(df_ohlc_mid, params):
-    if params.exchange in [Exchanges.bitmex]:
+    if params.exchange in [Exchange.bitmex]:
         kwargs = {name: params.__getattribute__(name) for name in ['exchange', 'series_tick_type', 'asset']}
         pdf_trade = get_ohlc(
             start=params.data_start,
@@ -417,7 +417,7 @@ def pad_volume_quote_from_trades(pdf: pd.DataFrame, qt_pad_ix=None) -> pd.DataFr
     return pdf
 
 
-def get_ohlc(start, end, asset: Assets, exchange: Exchanges, series: Series, series_tick_type: SeriesTickType, **kwargs) -> pd.DataFrame:
+def get_ohlc(start, end, asset: Assets, exchange: Exchange, series: Series, series_tick_type: SeriesTickType, **kwargs) -> pd.DataFrame:
     # need to get data from folder volume_usd_10000 or generally tick type. mix up of resolution and tick type here.
     folder = get_qc_folder(exchange, asset, series_tick_type)
     if 'volume' in series_tick_type.type:
@@ -444,7 +444,7 @@ def get_ohlc(start, end, asset: Assets, exchange: Exchanges, series: Series, ser
         df = load_zipped_data(folder, start=start, end=end, series=series, series_tick_type=series_tick_type)
         df = resample_qc_data(df, series, series_tick_type)
         # df = Qcu.inflate_low_value_assets(df, asset.lower())
-        if exchange in [Exchanges.fxcm]:
+        if exchange in [Exchange.fxcm]:
             df = delete_no_trading_days(df)
         df = fill_ohlcv_nan(df)
     return _transform_index(df, series_tick_type)

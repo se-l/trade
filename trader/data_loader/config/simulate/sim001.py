@@ -2,13 +2,13 @@ import datetime
 
 from common.utils.util_func import SeriesTickType
 from trader.train.config.reinforced import ParamsBase
-from common.modules import exchanges
+from common.modules import exchange
 
 
 class Params(ParamsBase):
     data_start = ts_start = datetime.datetime(2019, 8, 1)
     data_end = ts_end = datetime.datetime(2019, 8, 4, 23, 59, 59)
-    exchange = exchanges.bitmex
+    exchange = exchange.bitmex
     ex = None
     wave_params = [
         {

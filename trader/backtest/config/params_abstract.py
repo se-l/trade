@@ -1,11 +1,11 @@
 import types
 import datetime
-from common.modules import exchanges
+from common.modules import exchange
 from common.modules import signal_source
 
 
 class ParamsBase:
-    exchange = exchanges.fxcm
+    exchange = exchange.fxcm
     data_start = None
     data_end = None
     asset = None

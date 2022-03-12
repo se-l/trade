@@ -1,15 +1,15 @@
 from common.modules import assets
 from common.modules import order_type
-from common.modules import exchanges
+from common.modules import exchange
 
 
 class Fee:
 
     @staticmethod
     def fee(exchange, order_type, asset):
-        if exchange == exchanges.bitmex:
+        if exchange == exchange.bitmex:
             return Fee.fee_bitmex(order_type, asset)
-        elif exchange in [exchanges.fxcm, exchanges.ib]:
+        elif exchange in [exchange.fxcm, exchange.ib]:
             return Fee.fee_ib(order_type, asset)
         else:
             raise ValueError('Unknown Broker')

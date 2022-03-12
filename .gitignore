@@ -1,6 +1,6 @@
 **/__pycache__/
-**/sandbox/**
-**/subprocess_buffer/
+/sandbox/
+/subprocess_buffer/
 !/subprocess_buffer/__init__.py
 
 **/model/**
@@ -17,3 +17,4 @@
 /connector/mysql/**
 /trader/train/**
 /trader/plot/**
+/venv/

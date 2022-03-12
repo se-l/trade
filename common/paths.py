@@ -27,6 +27,7 @@ class Paths:
     # qc_bitmex_crypto = r'C:\repos\quantconnect\Lean3\Data\crypto\bitmex'
     qc_bitmex_crypto = os.path.join(lib_path, 'data', 'crypto', 'bitmex')
     bitmex_raw = os.path.join(lib_path, 'data', 'crypto', 'bitmex', 'raw')
+    bitfinex_tick = os.path.join(lib_path, 'data', 'crypto', 'bitfinex', 'tick')
     bitmex_raw_online_quote = r'https://s3-eu-west-1.amazonaws.com/public.bitmex.com/data/quote/{}.csv.gz'
     bitmex_raw_online_trade = r'https://s3-eu-west-1.amazonaws.com/public.bitmex.com/data/trade/{}.csv.gz'
 

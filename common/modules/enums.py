@@ -1,5 +1,5 @@
 from .assets import Assets
-from .exchanges import Exchanges
+from .exchange import Exchange
 from .direction import Direction
 from .features import Features
 from .order_type import OrderType
@@ -11,3 +11,4 @@ from .the import THE
 from .series import Series
 from .estimator_modes import EstimatorModes
 from .estimator_type import EstimatorType
+from .resolution import Resolution

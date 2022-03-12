@@ -2,6 +2,8 @@ import pandas as pd
 
 from common.modules import features
 from common.modules.data_store import DataStore
+from common.modules.direction import Direction
+from common.modules.features import Features
 from common.utils.util_func import total_profit2
 from connector.influxdb.influxdb_wrapper import InfluxClientWrapper as Influx
 from trader.data_loader.features2influx import insert_tick_n
@@ -31,6 +33,37 @@ def influx_store_results(params, data: DataStore):
     # get a ts AND check for duplicate ts requiving vol tick n
     pdf.index = data.load_get(f'ohlc_{params.target_the}')['ts'].values
     db_insert_preds(norm_index(pdf, params), params, training_set=params.train)
+    # from trader.train.supervised.estimators.estimator_base import EstimatorBase
+    # params.direction = Direction.long
+    # params.feature = Features.rl_risk_reward_ls_actual
+    # params.discount_decay = 0.9995
+    # label = y = EstimatorBase.get_label_vector(x_tv=data['x_tv'], ohlc=data['ohlc_tv'], params=params)
+    # pdf_l = pd.DataFrame(label, columns=['label'], index=data['ohlc_tv']['ts'])
+    # pdf_i = data['x_tv'].set_index(data['ohlc_tv']['ts'])
+    # pdf_i = pdf_i.drop('ts', axis=1)
+    # pdf_i2 = norm_index(pdf_i, params)
+    # Influx().write_pdf(pdf,
+    #                    measurement='label',
+    #                    tags=dict(
+    #                        asset=params.asset.lower(),
+    #                        exchange=params.exchange.name,
+    #                        ex=params.ex,
+    #                        tick_type=params.series_tick_type.type,
+    #                        label=f'direction-{params.direction}_discount_decay-{params.discount_decay}_discount_decay_min_threshold-{params.discount_decay_min_threshold}'
+    #                    ), field_columns=['label']
+    #                    )
+    # Influx().write_pdf(pdf,
+    #                    measurement='indicators',
+    #                    tags=dict(
+    #                        asset=params.asset.lower(),
+    #                        exchange=params.exchange.name,
+    #                        ex=params.ex,
+    #                        tick_type=params.series_tick_type.type,
+    #                        resample_val=params.series_tick_type.resample_val
+    #                    ),
+    #                    field_columns=[c for c in pdf.columns if c not in ['ts', 'tick_n']],
+    #                    tag_columns=['tick_n'] if 'volume' in params.series_tick_type.type else []
+    #                    )
 
 
 def db_insert_preds(pdf, params, training_set):
@@ -48,7 +81,8 @@ def db_insert_preds(pdf, params, training_set):
                                training_set=training_set
                            ),
                            field_columns=['p'],
-                           tag_columns=['tick_n'] if 'volume' in params.series_tick_type.type else []
+                           tag_columns=['tick_n'] if 'volume' in params.series_tick_type.type else [],
+                           # overwrite=True
                            )
 
 

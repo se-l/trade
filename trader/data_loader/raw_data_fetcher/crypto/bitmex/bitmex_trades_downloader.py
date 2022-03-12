@@ -6,7 +6,7 @@ from urllib.request import urlretrieve
 from concurrent.futures import ThreadPoolExecutor as PoolExecutor
 
 from common.utils.util_func import date_day_range
-from common import Paths
+from common.paths import Paths
 
 
 class BitmexTradesDownloader:
@@ -34,7 +34,8 @@ class BitmexTradesDownloader:
     @classmethod
     def get_qt_dates(cls):
         qt_dates = []
-        for qt in ['quote', 'trade']:
+        # for qt in ['quote', 'trade']:
+        for qt in ['trade']:
             a = list(os.walk(cls.get_target_dir(qt)))[0][2]
             latest_file_date = max([int(o[0:8]) for o in a])
             latest_file_date = datetime.datetime.strptime(str(latest_file_date), '%Y%m%d')

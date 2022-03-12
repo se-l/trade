@@ -40,31 +40,33 @@ class OrderBookFeatures:
     @staticmethod
     def get_order_book_feat_names(params) -> list:
         features = []
+        min_period = 14
         time_increases = params.order_book_feats_n
         time_increase_power = params.order_book_tick_increase_power
-        max_delta_time = [int(1 + i ** time_increase_power) for i in range(time_increases)][-1]
+        max_delta_time = [int(min_period + i ** time_increase_power) for i in range(time_increases)][-1]
         for ab in ['ask', 'bid']:
             features += list(itertools.chain(*[[
                 f'{ab}_size_update_add_sum_{delta_time}',
                 f'{ab}_size_update_remove_sum_{delta_time}',
                 f'{ab}_size_update_add_cnt_sum_{delta_time}',
                 f'{ab}_size_update_remove_cnt_sum_{delta_time}',
-            ] for delta_time in [int(1 + i ** time_increase_power) for i in range(time_increases)]]))
+            ] for delta_time in [int(min_period + i ** time_increase_power) for i in range(time_increases)]]))
         logger.info(f'Order Book Features: {len(features)}')
         return features
 
     @staticmethod
     def get_trade_metric_feat_names(params) -> list:
         features = []
+        min_period = 14
         time_increases = params.trade_metric_feats_n
         time_increase_power = params.trade_metric_tick_increase_power
-        max_delta_time = [int(1 + i ** time_increase_power) for i in range(time_increases)][-1]
+        max_delta_time = [int(min_period + i ** time_increase_power) for i in range(time_increases)][-1]
         features = list(itertools.chain(*[[
             f'trade_volume_buy_sum_{delta_time}',
             f'trade_volume_sell_sum_{delta_time}',
             f'trade_count_sell_sum_{delta_time}',
             f'trade_count_buy_sum_{delta_time}',
-        ] for delta_time in [int(1 + i ** time_increase_power) for i in range(time_increases)]]))
+        ] for delta_time in [int(min_period + i ** time_increase_power) for i in range(time_increases)]]))
         logger.info(f'Trade Activity Features: {len(features)}')
         return features
 

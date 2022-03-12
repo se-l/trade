@@ -1,5 +1,5 @@
 from common.modules import direction
-from common.modules import exchanges
+from common.modules import exchange
 from common.utils.util_func import SeriesTickType
 from trader.backtest.config.params_abstract import ParamsBase
 from common.modules import assets
@@ -7,7 +7,7 @@ import datetime
 
 
 class Params(ParamsBase):
-    exchange = exchanges.bitmex
+    exchange = exchange.bitmex
     train = True
     # data_start = ts_start = datetime.datetime(2019, 8, 2)
     # data_end = ts_end = datetime.datetime(2019, 8, 4, 23, 59, 59)

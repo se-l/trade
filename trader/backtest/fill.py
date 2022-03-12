@@ -3,7 +3,7 @@ import math
 
 
 # @aliased
-from common.modules import exchanges
+from common.modules import exchange
 
 
 class Fill(dict):
@@ -22,7 +22,7 @@ class Fill(dict):
         s.signal_fill_slippage = None
         s.avg_price = avg_price
         s.order_type = None
-        s.exchange = exchanges.bitmex
+        s.exchange = exchange.bitmex
 
         for k, v in kwargs.items():
             s[k] = v

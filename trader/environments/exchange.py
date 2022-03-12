@@ -7,7 +7,7 @@ import pandas as pd
 from common.refdata import tick_size
 from trader.backtest.fill import Fill
 from common.utils.util_func import todec, pdf_col_ix
-from common.modules import direction, order_type, exchanges
+from common.modules import direction, order_type, exchange
 from common.modules.logger import logger
 
 
@@ -34,7 +34,7 @@ class Exchange:
         return s
 
     def _exchange_has_trade_data(s):
-        return True if s.params.exchange in [exchanges.bitmex] else False
+        return True if s.params.exchange in [exchange.bitmex] else False
 
     def reset(s):
         s.__init__(s.params, s.feature_hub)

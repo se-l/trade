@@ -18,14 +18,16 @@ import pickle
 from enum import Enum
 from typing import Union
 from collections import namedtuple
-from functools import reduce, partial
+from functools import reduce, partial, lru_cache
 from sklearn.model_selection import KFold
 from sklearn.utils import indexable
 from sklearn.utils.validation import _num_samples
 from sklearn.metrics import log_loss  # accuracy_score recall_score, precision_score, f1_score
 from decimal import Decimal
 from hyperopt.pyll.base import Apply
+from statsmodels.tsa.stattools import adfuller
 
+from ..modules.assets import Assets
 from ..modules.direction import Direction
 from ..modules.dotdict import Dotdict
 from ..modules.rec_dotdict import recDotDict
@@ -810,6 +812,12 @@ def divby(dic, key, by=10000):
     return dic
 
 
+@lru_cache()
+def ex(sym: Assets = None) -> str:
+    return f'ex{datetime.datetime.utcnow().strftime("%Y-%m-%d_%H%M%S")}-' \
+           f'{sym.name if sym else ""}'
+
+
 def set_ex(params):
     """'0' or None for fresh init"""
     if params.ex in ['0', None]:
@@ -1219,3 +1227,20 @@ def pdf_col_ix(pdf, name):
 def total_profit2(order_lst):
     return [sum([(order.fill.avg_price - order_lst[i - 1].fill.avg_price) * (-1 if order.direction == Direction.long else 1) for i, order in enumerate(order_lst[:i]) if i % 2 != 0]) for i in
             range(len(order_lst))]
+
+
+def is_stationary(arr: np.array, threshold: float = 0.05) -> bool:
+    """
+    Augmented Dickey-Fuller test
+    https://machinelearningmastery.com/time-series-data-stationary-python/
+    p-value <= 0.05: Reject the null hypothesis (H0), the data does not have a unit root and is stationary.
+    """
+    try:
+        result = adfuller(arr)
+        logger.info(f'''p-value: {result[1]} - ADF Statistic: {result[0]}''')
+        # for key, value in result[4].items():
+        #     print('\t%s: %.3f' % (key, value))
+        return result[1] <= threshold
+    except Exception as e:
+        logger.warning(e)
+        return False

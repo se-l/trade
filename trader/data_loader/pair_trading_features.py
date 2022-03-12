@@ -67,11 +67,12 @@ class PairTradingFeatures:
     @staticmethod
     def get_sym_interaction_feat_names(params) -> list:
         features = []
+        min_period = 14
         time_increases = params.pair_feats_n
         time_increase_power = params.pair_tick_increase_power
-        max_delta_time = [int(1 + i ** time_increase_power) for i in range(time_increases)][-1]
+        max_delta_time = [int(min_period + i ** time_increase_power) for i in range(time_increases)][-1]
         for sym in to_list(params.pair_sym_other):
-            features += [f'pair-{params.asset}-{sym}-price_ratio-{delta_time}' for delta_time in [int(1 + i ** time_increase_power) for i in range(time_increases)]]
+            features += [f'pair-{params.asset}-{sym}-price_ratio-{delta_time}' for delta_time in [int(min_period + i ** time_increase_power) for i in range(time_increases)]]
         logger.info(f'Pair Trading Features: {len(features)}')
         return features
 
