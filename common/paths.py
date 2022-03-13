@@ -16,6 +16,9 @@ class Paths:
     trader = os.path.join(lib_path, 'trader')
     files = os.path.join(lib_path, 'files')
     dir_norm_tal = os.path.join(lib_path, 'norm_tal')
+    layers = os.path.join(lib_path, 'layers')
+    layer_bars = os.path.join(layers, 'bars')
+    layer_settings = os.path.join(layer_bars, 'settings.yaml')
 
     data = os.path.join(lib_path, 'data')
     # qc_data = r'C:\repos\quantconnect\Lean3\Data'

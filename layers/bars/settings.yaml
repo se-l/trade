@@ -1,0 +1,46 @@
+bitfinex:
+  ethusd:
+    price:
+      unit_size: 1
+    volatility:
+      resampling_rule: "1D"
+      span: "30D"
+      weighting: "ewm"
+    volume:
+      ethusd: 50
+      usd: 150_000
+    trade imbalance:
+      ethusd: 50
+      tick: 50
+      usd: 150_000
+    order book:
+      level_from_price_pct: 1
+      resample_sec: 15
+    trade sequence:
+      ethusd: 100
+      tick: 500
+      usd: 300_000
+  btcusd:
+    price:
+      unit_size: 5
+    order book:
+      level_from_price_pct: 1
+      resample_sec: 15
+  solusd:
+    price:
+      unit_size:
+    order book:
+      level_from_price_pct: 1
+      resample_sec: 15
+  adausd:
+    price:
+      unit_size:
+    order book:
+      level_from_price_pct: 1
+      resample_sec: 15
+  xrpusd:
+    price:
+      unit_size:
+    order book:
+      level_from_price_pct: 1
+      resample_sec: 15

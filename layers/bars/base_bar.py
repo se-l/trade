@@ -37,8 +37,8 @@ class BaseBar:
             record=df,
             data_frame_measurement_name='trade bars',
             data_frame_tag_columns={**{
-                'exchange': self.exchange.name,
-                'asset': self.sym.name,
+                'exchange': self.exchange,
+                'asset': self.sym,
                 'information': self.information,
                 'unit': self.unit,
             }, **self.tags},

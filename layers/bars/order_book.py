@@ -1,16 +1,13 @@
+import yaml
 import numpy as np
 import datetime
 import pandas as pd
 
+from functools import lru_cache
 from itertools import product
-from common.modules.assets import Assets
-from common.modules.exchange import Exchange
+from common.paths import Paths
 from connector.influxdb.influxdb_wrapper import influx
 from common.modules.logger import logger
-
-
-# @numba.jit(nopython=True)
-from layers.bars.base_bar import BaseBar
 
 
 def apply_best_bid_ask(price: np.ndarray, side: np.ndarray, size: np.ndarray):
@@ -76,10 +73,15 @@ class OrderBook:
         created from a stream of ticks
     - Best bid ask frame.
     """
-    level_distance = 0.1
-
-    def __init__(self, df_quotes: pd.DataFrame):
+    def __init__(self, df_quotes, level_from_price_pct):
         self.df_quotes = df_quotes
+        self.level_from_price_pct = level_from_price_pct
+
+    @property
+    @lru_cache()
+    def level_distance(self):
+        res = (self.df_quotes['price'].shift(1) - self.df_quotes['price']).abs()
+        return res[res != 0].min()
 
     def create_order_book(self):
         df = self.df_quotes
@@ -116,30 +118,37 @@ class OrderBook:
         df['level'] = df['level'].fillna(0).astype(int).abs()
         self.df_quotes = df = df.set_index(['timestamp', 'side', 'level'])
 
-    def derive_events(self, depth=30):
+    @property
+    @lru_cache()
+    def level(self) -> int:
+        return int((self.df_quotes['price'] * self.level_from_price_pct / 100).max() / self.level_distance)
+
+    def derive_events(self):
         df = self.df_quotes
-        df = df.loc[(slice(None), slice(None), list(range(depth))), :]
+        df = df.loc[(slice(None), slice(None), list(range(self.level))), :]
         df = df.groupby(['timestamp', 'side', 'level']).last()
         # cumulative race through all rows. final state must include every single level
         book = pd.DataFrame(None,
                             index=pd.MultiIndex.from_product([
                                 df.index.get_level_values('timestamp').unique(),
                                 [1, -1],  # side
-                                range(depth)
+                                range(self.level)
                             ], names=["timestamp", "side", 'level']),
                             columns=['size', 'count'], dtype=float)
         book.loc[df.index] = df[['size', 'count']]
         df = None
         ix_ts = book.index.get_level_values('timestamp').unique()
-        arr = book.values.reshape(len(ix_ts), 2, depth, 2)
+        arr = book.values.reshape(len(ix_ts), 2, self.level, 2)
         ix_valid = 0
-        for side, level in product([0, 1], range(depth)):
+        for side, level in product([0, 1], range(self.level)):
             print(f'Side: {side} - Level: {level}')
             arr[:, side, level, 0] = ffill(arr[:, side, level, 0])
             ix_valid = max(np.argmin(np.isnan(arr[:, side, level, 0])), ix_valid)
             arr[:, side, level, 1] = ffill(arr[:, side, level, 1])
             ix_valid = max(np.argmin(np.isnan(arr[:, side, level, 1])), ix_valid)
-        return arr[ix_valid:], ix_ts[ix_valid:]
+        arr, ts = arr[ix_valid:], ix_ts[ix_valid:]
+        arr = np.nan_to_num(arr)
+        return arr, ts
 
     def to_influx(self, df):
         if not self.information:
@@ -163,124 +172,130 @@ def ffill(arr: np.ndarray) -> np.ndarray:
 
 
 if __name__ == '__main__':
-    import pickle
-    from layers.bitfinex_reader import BitfinexReader
+    with open(Paths.layer_settings, "r") as stream:
+        settings = yaml.safe_load(stream)
+    for exchange in settings.keys():
+        for asset, params in settings[exchange].items():
+            try:
+                logger.info(f'Loading order book for {exchange} - {asset}')
+                params = params.get('order book', {})
+                resample_sec = params.get('resample_sec')
+                from layers.bitfinex_reader import BitfinexReader
+                start = datetime.datetime(2022, 2, 7)
+                end = datetime.datetime(2022, 3, 12)
+                for i in range(1 + (end-start).days):
+                    dt = start + datetime.timedelta(days=i)
+                    logger.info(f'Running {dt}')
+                    df = BitfinexReader.load_quotes(sym=asset, start=dt, end=dt)
+                    ob = OrderBook(df, level_from_price_pct=params.get('level_from_price_pct'))
+                    level = ob.level
+                    logger.info(f'{asset} - Summarizing {level} order book levels')
+                    ob.create_order_book()
+                    arr, ix_ts = ob.derive_events()
 
-    exchange = Exchange.bitfinex
-    asset = Assets.ethusd
-    start = datetime.datetime(2022, 2, 7)
-    end = datetime.datetime(2022, 2, 16)
-    level = 30
-    for i in range(1 + (end-start).days):
-        dt = start + datetime.timedelta(days=i)
-        logger.info(f'Running {dt}')
-        df = BitfinexReader.load_quotes(sym=asset.name, start=dt, end=dt)
-        ob = OrderBook(df)
-        ob.create_order_book()
-        arr, ix_ts = ob.derive_events()
+                    alpha = 2/(level + 1)
+                    weights = np.array([(1-alpha)**i for i in range(level)]).reshape(1, 1, level, 1)
 
-        alpha = 2/(level + 1)
-        weights = np.array([(1-alpha)**i for i in range(level)]).reshape(1, 1, level, 1)
+                    arr = (arr * weights).sum(axis=2)
+                    size, count = arr[:, :, 0], arr[:, :, 1]
 
-        arr = (arr * weights).sum(axis=2)
-        size, count = arr[:, :, 0], arr[:, :, 1]
+                    for name in ('size_ratio', 'count_ratio', 'size_net', 'count_net'):
+                        if name == 'size_ratio':
+                            size_ratio = (size[:, 0] / np.abs(size[:, 1]))  # bid|buy / ask|sell
+                            ps = pd.Series(size_ratio, index=ix_ts, name=name)
+                        elif name == 'count_ratio':
+                            count_ratio = (count[:, 0] / np.abs(count[:, 1]))
+                            ps = pd.Series(count_ratio, index=ix_ts, name=name)
+                        elif name == 'size_net':
+                            ps = pd.Series(size[:, 0] + size[:, 1], index=ix_ts, name=name)
+                        elif name == 'count_net':
+                            ps = pd.Series(count[:, 0] - count[:, 1], index=ix_ts, name=name)  # bid - ask
+                        else:
+                            raise ValueError
 
-        for name in ('size_ratio', 'count_ratio', 'size_net', 'count_net'):
-            if name == 'size_ratio':
-                size_ratio = (size[:, 0] / np.abs(size[:, 1]))  # bid|buy / ask|sell
-                ps = pd.Series(size_ratio, index=ix_ts, name=name)
-            elif name == 'count_ratio':
-                count_ratio = (count[:, 0] / np.abs(count[:, 1]))
-                ps = pd.Series(count_ratio, index=ix_ts, name=name)
-            elif name == 'size_net':
-                ps = pd.Series(size[:, 0] + size[:, 1], index=ix_ts, name=name)
-            elif name == 'count_net':
-                ps = pd.Series(count[:, 0] - count[:, 1], index=ix_ts, name=name)  # bid - ask
-            else:
-                raise ValueError
+                        if 'ratio' in ps.name:
+                            ix_ask_greater = ps.index[ps < 1]
+                            ps.loc[ix_ask_greater] = -1 / ps.loc[ix_ask_greater]
+                            max_bid = ps.resample(f'{resample_sec}s').max()
+                            max_ask = ps.resample(f'{resample_sec}s').min()
+                            psc = pd.Series(np.where(max_bid > np.abs(max_ask), max_bid, max_ask), index=max_bid.index, name=f'bid_buy_{name}')
+                            logger.info(f"Influx load: {f'bid_buy_{name}_imbalance_net_resampled_max'}")
+                            influx.write(
+                                record=psc,
+                                data_frame_measurement_name='order book',
+                                data_frame_tag_columns={**{
+                                    'exchange': exchange,
+                                    'asset': asset,
+                                    'information': f'bid_buy_{name}_imbalance_ratio_resampled_max',
+                                    'unit': 'size_ewm_sum',
+                                    'levels': level,
+                                    'alpha': alpha,
+                                    'unit_size': resample_sec
+                                }},
+                            )
+                        elif 'net' in ps.name:
+                            max_bid = ps.resample(f'{resample_sec}s').max()
+                            max_ask = ps.resample(f'{resample_sec}s').min()
+                            psc = pd.Series(np.where(max_bid > np.abs(max_ask), max_bid, max_ask), index=max_bid.index, name=f'bid_buy_{name}')
+                            logger.info(f"Influx load: {f'bid_buy_{name}_imbalance_net_resampled_max'}")
+                            influx.write(
+                                record=psc,
+                                data_frame_measurement_name='order book',
+                                data_frame_tag_columns={**{
+                                    'exchange': exchange,
+                                    'asset': asset,
+                                    'information': f'bid_buy_{name}_imbalance_net_resampled_max',
+                                    'unit': 'size_ewm_sum',
+                                    'levels': level,
+                                    'alpha': alpha,
+                                    'unit_size': resample_sec
+                                }},
+                            )
+                        else:
+                            pass
 
-            if 'ratio' in ps.name:
-                ix_ask_greater = ps.index[ps < 1]
-                ps.loc[ix_ask_greater] = -1 / ps.loc[ix_ask_greater]
-                max_bid = ps.resample('15s').max()
-                max_ask = ps.resample('15s').min()
-                psc = pd.Series(np.where(max_bid > np.abs(max_ask), max_bid, max_ask), index=max_bid.index, name=f'bid_buy_{name}')
-                logger.info(f"Influx load: {f'bid_buy_{name}_imbalance_net_resampled_max'}")
-                influx.write(
-                    record=psc,
-                    data_frame_measurement_name='order book',
-                    data_frame_tag_columns={**{
-                        'exchange': exchange.name,
-                        'asset': asset.name,
-                        'information': f'bid_buy_{name}_imbalance_ratio_resampled_max',
-                        'unit': 'size_ewm_sum',
-                        'levels': level,
-                        'alpha': alpha,
-                        'unit_size': 15
-                    }},
-                )
-            elif 'net' in ps.name:
-                unit_size = 15
-                max_bid = ps.resample('15s').max()
-                max_ask = ps.resample('15s').min()
-                psc = pd.Series(np.where(max_bid > np.abs(max_ask), max_bid, max_ask), index=max_bid.index, name=f'bid_buy_{name}')
-                logger.info(f"Influx load: {f'bid_buy_{name}_imbalance_net_resampled_max'}")
-                influx.write(
-                    record=psc,
-                    data_frame_measurement_name='order book',
-                    data_frame_tag_columns={**{
-                        'exchange': exchange.name,
-                        'asset': asset.name,
-                        'information': f'bid_buy_{name}_imbalance_net_resampled_max',
-                        'unit': 'size_ewm_sum',
-                        'levels': level,
-                        'alpha': alpha,
-                        'unit_size': 15
-                    }},
-                )
-            else:
-                pass
+                        if 'ratio' in ps.name:
+                            if 'ratio' in ps.name:
+                                ix_ask_greater = ps.index[ps < 1]  # i
+                                ps.loc[ix_ask_greater] = 1 / ps.loc[ix_ask_greater]
+                                pa = (ps - ps.shift(1)).fillna(0).cumsum()
+                            else:
+                                pa = (ps - ps.shift(1)).fillna(0).cumsum()
+                            bars = []
+                            while True:
+                                iloc_event = np.argmax(pa.abs().values >= resample_sec)
+                                if iloc_event == 0:
+                                    break
+                                iloc_event = 10 ** 99 if iloc_event == 0 else iloc_event
 
-            if 'ratio' in ps.name:
-                unit_size = 5
-                if 'ratio' in ps.name:
-                    ix_ask_greater = ps.index[ps < 1]  # i
-                    ps.loc[ix_ask_greater] = 1 / ps.loc[ix_ask_greater]
-                    pa = (ps - ps.shift(1)).fillna(0).cumsum()
-                else:
-                    pa = (ps - ps.shift(1)).fillna(0).cumsum()
-                bars = []
-                while True:
-                    iloc_event = np.argmax(pa.abs().values >= unit_size)
-                    if iloc_event == 0:
-                        break
-                    iloc_event = 10 ** 99 if iloc_event == 0 else iloc_event
+                                if pa.iloc[iloc_event] > 0:
+                                    direction = 1
+                                else:
+                                    direction = -1
 
-                    if pa.iloc[iloc_event] > 0:
-                        direction = 1
-                    else:
-                        direction = -1
+                                bars.append({'imbalance_direction': direction, 'timestamp': pa.index[iloc_event]})
+                                pa = pa.iloc[iloc_event:] - pa.iloc[iloc_event]
 
-                    bars.append({'imbalance_direction': direction, 'timestamp': pa.index[iloc_event]})
-                    pa = pa.iloc[iloc_event:] - pa.iloc[iloc_event]
+                            if bars:
+                                psc = pd.DataFrame(bars).set_index('timestamp')['imbalance_direction']
+                                logger.info(f"Influx load: {f'bid_buy_imbalance_delta_{psc.name}'}")
+                                influx.write(
+                                    record=psc,
+                                    data_frame_measurement_name='order book',
+                                    data_frame_tag_columns={**{
+                                        'exchange': exchange,
+                                        'asset': asset,
+                                        'information': f'bid_buy_imbalance_delta_{psc.name}',
+                                        'unit': 'size_ewm_sum',
+                                        'levels': level,
+                                        'alpha': alpha,
+                                        'unit_size': resample_sec
+                                    }},
+                                )
+                        else:
+                            print('Wrong')
+            except Exception as e:
+                logger.warning(f'{exchange} - {asset} - Price')
+                logger.warning(f'{e}')
+    logger.info('Done')
 
-                if bars:
-                    psc = pd.DataFrame(bars).set_index('timestamp')['imbalance_direction']
-                    logger.info(f"Influx load: {f'bid_buy_imbalance_delta_{psc.name}'}")
-                    influx.write(
-                        record=psc,
-                        data_frame_measurement_name='order book',
-                        data_frame_tag_columns={**{
-                            'exchange': exchange.name,
-                            'asset': asset.name,
-                            'information': f'bid_buy_imbalance_delta_{psc.name}',
-                            'unit': 'size_ewm_sum',
-                            'levels': level,
-                            'alpha': alpha,
-                            'unit_size': unit_size
-                        }},
-                    )
-            else:
-                print('Wrong')
-
-            print(f'Done {name}.')

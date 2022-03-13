@@ -22,10 +22,6 @@ class BitfinexReader:
                 if start <= fn_date < end + datetime.timedelta(days=1):
                     try:
                         df = pd.read_csv(os.path.join(directory, fn), compression='gzip', header=None)
-                        # df = cls.remove_merged_rows(df)
-                        # step = 1_000_000
-                        # for i in range(0, len(df), step):
-                        #     df.loc[i:i+step, 0] = pd.to_datetime(df.loc[i:i + step, 0].astype(int) * 1000 ** 3, origin=fn_date).dt.round('ms')  # float issue giving imprecise ns when converting to dt
                         df[0] = pd.to_datetime(df[0].astype(float) * 1000 ** 3, origin=fn_date).dt.round('ms')  # float issue giving imprecise ns when converting to dt
                     except pd.errors.EmptyDataError:
                         logger.info(f'No Data for {fn_date}')

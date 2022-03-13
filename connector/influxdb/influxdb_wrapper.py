@@ -114,7 +114,7 @@ if __name__ == '__main__':
     pass
     # influx.delete(predicate='''_measurement="trade bars" ''')
     # influx.delete(predicate='''_measurement="trade bars" and information="imbalance" and unit="ethusd" and unit_size=100 ''')
-    # influx.delete(predicate='''_measurement="order book" and exchange="bitfinex" ''')
+    influx.delete(predicate='''_measurement="order book" ''')
     # influx.query(query='''
     #                 from(bucket:"trading")
     #                 |> range(start: 2020-01-01T00:00:00Z, stop: 2020-01-05T00:00:00Z)
