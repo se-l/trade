@@ -17,7 +17,7 @@ class Paths:
     files = os.path.join(lib_path, 'files')
     dir_norm_tal = os.path.join(lib_path, 'norm_tal')
 
-    qc_data = os.path.join(lib_path, 'data')
+    data = os.path.join(lib_path, 'data')
     # qc_data = r'C:\repos\quantconnect\Lean3\Data'
     qc_forex = os.path.join(lib_path, 'data', 'forex')
     # qc_forex = r'C:\repos\quantconnect\Lean3\Data\forex'

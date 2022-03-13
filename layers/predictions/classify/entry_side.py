@@ -6,11 +6,15 @@ from collections import Counter
 import pandas as pd
 import lightgbm as lgb
 import numpy as np
+import matplotlib.pyplot as plt
 
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from scipy.stats import gmean
 from common.modules.logger import logger
 from itertools import product
 from functools import reduce
 from sklearn.model_selection import KFold
+from sklearn.cluster import MiniBatchKMeans
 from common.modules.assets import Assets
 from common.modules.exchange import Exchange
 from common.utils.util_func import ex
@@ -20,6 +24,7 @@ from common.paths import Paths
 from layers.features.upsampler import Upsampler
 from layers.predictions.event_extractor import EventExtractor
 from common.utils.util_func import is_stationary
+from layers.predictions.sample_weights import SampleWeights
 
 """
 Continue picking samples from parts where a series has values beyond expectation. say 2 sigma away.
@@ -30,57 +35,6 @@ Todo:
     - what's beyond expectation: gaussian and sigma? Moving averages with bands? smoothing + range: what's range: smoothing would be a function of the aggregation time window
         what if it's trending? run the stationarity test before. if fails, exclude that series!
 """
-
-
-class SampleWeights:
-    def __init__(self, ps_label: pd.Series, df: pd.DataFrame):
-        self.ps_label = ps_label
-        self.df = df
-        self.weight_arrays = {}
-        # weight array weight
-
-    def uniqueness_sample_weights(self):
-        n = len(self.ps_label)
-        self.weight_arrays['uniqueness'] = None
-        # assert round(self.weight_arrays['uniqueness'].sum(), 3) == 1000
-        return self
-
-    def return_attribution_sample_weights(self): pass
-    def time_decay_sample_weights(self): pass
-
-    def label_sample_weight(self):
-        """
-        Ensure short/long get significant representation long/short to avoid getting low error scores by just prediction flat.
-        Presume int labels starting from 0.
-        """
-        n = len(self.ps_label)
-        classes = sorted(self.ps_label.unique())
-        n_classes = len(classes)
-        if n_classes == 3:  # 1 means flat
-            cnt_classes = dict(Counter(self.ps_label))
-            class_weights = {1: 0.5 / cnt_classes[1]}  # n_flat * weight_flat = 0.5
-            # n_short * weight_short + n_long * weight_long = 0.5
-            # n_short * weight_short = n_long * weight_long
-            # weight_short = n_long * weight_long / n_short
-            # n_short * ( n_long * weight_long / n_short ) + n_long * weight_long = 0.5
-            # n_long * weight_long + n_long * weight_long = 0.5
-            # weight_long = 0.5 / (2 * n_long)
-            class_weights[2] = 0.5 / (2 * cnt_classes[2])
-            class_weights[0] = cnt_classes[2] * class_weights[2] / cnt_classes[0]
-            logger.info(f'Label Sample weights: {class_weights}')
-        else:
-            raise NotImplementedError
-
-        self.weight_arrays['label_classes'] = self.ps_label.map(class_weights).values * 1000  # counter floating point issues
-        assert round(self.weight_arrays['label_classes'].sum(), 3) == 1000
-        return self
-
-    def combine(self): pass
-
-    def __call__(self) -> np.array:
-        res = np.array(list(self.weight_arrays.values())).mean(axis=0)  # weight the classes
-        assert len(res) == len(self.ps_label)
-        return res
 
 
 class EstimateSide:
@@ -113,7 +67,8 @@ class EstimateSide:
 
     def load_label(self, df: pd.DataFrame) -> (pd.DataFrame, pd.Series):
         df_label = influx.query(query=influx.build_query(predicates={'_measurement': 'label', 'exchange': self.exchange.name, 'asset': self.sym.name,
-                                                                     'expiration_window': '180min', '_field': 'label'},
+                                                                     # 'expiration_window': '180min', '_field': 'label'},
+                                                                     'ewm_span': '60min', '_field': 'forward_return_ewm'},
                                                          start=self.start,
                                                          end=self.end),
                                 return_more_tables=False
@@ -123,11 +78,16 @@ class EstimateSide:
         df_m = self.curtail_nnan_front_end(df_m).ffill()
         df_m = df_m.iloc[df_m.isna().sum().max():]
         assert df_m.isna().sum().sum() == 0
-        return df_m[[c for c in df_m.columns if c != 'label']], df_m['label'] + 1
+        # return df_m[[c for c in df_m.columns if c != 'label']], df_m['label'] + 1  # multi class label
+        return df_m[[c for c in df_m.columns if c != 'label']], df_m['label']  # return label
 
     @staticmethod
     def curtail_nnan_front_end(df):
-        iloc_begin = np.argmax((~np.isnan(df.values)), axis=0).max()
+        iloc_begin = np.argmax((~np.isnan(df.values)), axis=0)
+        for i, iloc in enumerate(iloc_begin):
+            if iloc == 0 and np.isnan(df.values[0, i]):
+                iloc_begin[i] = np.isnan(df.values[:, i]).sum()
+        iloc_begin = iloc_begin.max()
         iloc_end = len(df) - np.argmax((~np.isnan(df.values[::-1])), axis=0).max()
         return df.iloc[iloc_begin:iloc_end]
 
@@ -147,6 +107,7 @@ class EstimateSide:
 
     def load_features(self) -> pd.DataFrame:
         """order book imbalance, tick imbalance, sequence etc."""
+        logger.info(f'Loading features. Book...')
         df_book = influx.query(query=influx.build_query(predicates={'_measurement': 'order book', 'exchange': self.exchange.name, 'asset': self.sym.name},
                                                                    start=self.start,
                                                                    end=self.end),
@@ -181,10 +142,11 @@ class EstimateSide:
             [Upsampler(df_trade_sequence[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in product(df_trade_sequence.columns, self.window_aggregators)],
             sort=True, axis=1)
         logger.info('Trade book done')
-        df = pd.concat((df_book, df_trade_imbalance, df_trade_sequence), sort=False, axis=1)
+        df = pd.concat((df_book, df_trade_imbalance, df_trade_sequence), sort=True, axis=1)
         df = self.exclude_too_little_data(df)
         # ffill after curtailing to avoid arriving at incorrect states for timeframes where information has simply not been loaded
         df = self.curtail_nnan_front_end(df).ffill()
+        df = self.exclude_too_little_data(df)
         df = df.iloc[df.isna().sum().max():]
         assert df.isna().sum().sum() == 0
         return df
@@ -192,6 +154,9 @@ class EstimateSide:
     @staticmethod
     def exclude_too_little_data(df) -> pd.DataFrame:
         iloc_begin = np.argmax((~np.isnan(df.values)), axis=0)
+        for i, iloc in enumerate(iloc_begin):
+            if iloc == 0:
+                iloc_begin[i] = np.isnan(df.values[:, i]).sum()
         iloc_end = len(df) - np.argmax((~np.isnan(df.values[::-1])), axis=0)
         # exclude whose range is too small. series with high resolution will have small data cnt, still large range
         mean_range = (iloc_end-iloc_begin).mean()
@@ -213,20 +178,20 @@ class EstimateSide:
         return df[[c for c in df.columns if f(df[c])]]
 
     def assemble_frame(self):
-        if True:
+        if False:
             self.df = self.load_features()
-            with open(os.path.join(Paths.lib_path, 'df.p'), 'wb') as f:
+            with open(os.path.join(Paths.data, 'df.p'), 'wb') as f:
                 pickle.dump(self.df, f)
-            # with open(os.path.join(Paths.lib_path, 'label.p'), 'wb') as f:
+            # with open(os.path.join(Paths.data, 'label.p'), 'wb') as f:
             #     pickle.dump(self.ps_label, f)
         else:
-            with open(os.path.join(Paths.lib_path, 'df.p'), 'rb') as f:
+            with open(os.path.join(Paths.data, 'df.p'), 'rb') as f:
                 self.df = pickle.load(f)
-            # with open(os.path.join(Paths.lib_path, 'label.p'), 'rb') as f:
+            # with open(os.path.join(Paths.data, 'label.p'), 'rb') as f:
             #     self.ps_label = pickle.load(f)
         self.df, self.ps_label = self.load_label(self.df)
         # ts_sample = self.load_sample_from_signals(self.df)  # samples
-        ts_sample = pd.Index(reduce(lambda res, item: res.union(set(item)), (EventExtractor(thresholds=[4, 4])(self.df[col], len(self.df) / 10) for col in self.df.columns), set()))
+        ts_sample = pd.Index(reduce(lambda res, item: res.union(set(item)), (EventExtractor(thresholds=[1, 1])(self.df[col], len(self.df) / 10) for col in self.df.columns), set()))
         logger.info(f'len ts_sample: {len(ts_sample)} - {100 * len(ts_sample) / len(self.df)} of df')
         if not ts_sample.empty:
             ix_sample = ts_sample.intersection(self.ps_label.index)
@@ -248,7 +213,7 @@ class EstimateSide:
             i_end = test_index[-1] + 1
             return np.array(train_index[:(train_index.tolist().index(i_begin) - i)].tolist() + train_index[(train_index.tolist().index(i_end) + i):].tolist())
 
-    def split_ho(self, ho_share=0.7):
+    def split_ho(self, ho_share=0.3):
         n_ho = int(len(self.df) * ho_share // 1)
         n_cv = len(self.df) - n_ho
         df = self.df.iloc[:n_cv]
@@ -264,16 +229,19 @@ class EstimateSide:
         self.split_ho()
         kf = KFold(n_splits=5, shuffle=False)
         estimator_params = {
+            'objective': 'huber',
+            # 'objective': 'multiclass',
             'verbosity': 0,
             'learning_rate': 0.1,
-            'objective': 'multiclass',
-            'num_class': 3,
+            # 'num_class': 3,
             'early_stopping_round': 20,
         }
         preds_val = []
         preds_ho = []
-        arr_weight = SampleWeights(ps_label=self.ps_label, df=self.df).label_sample_weight()()
-        # arr_weight = np.ones(len(self.ps_label))
+        arr_weight = SampleWeights(ps_label=self.ps_label, df=self.df).\
+            return_attribution_sample_weights().\
+            cluster_sample_weight(50).geometric_mean()
+
         scores = []
         for train_index, test_index in kf.split(self.df.index):
             train_index = self.purge_overlap(train_index, test_index)
@@ -289,21 +257,71 @@ class EstimateSide:
             scores.append(lgb_booster.best_score['valid_0'])
             preds_val.append(pd.DataFrame(lgb_booster.predict(self.df.iloc[test_index]), index=self.df.iloc[test_index].index))
             preds_ho.append(pd.DataFrame(lgb_booster.predict(self.df_ho), index=self.df_ho.index))
-        logger.info(f'Scores: Mean: {np.mean([s["multi_logloss"] for s in scores])}  {scores}')
-        self.preds_val = pd.concat(preds_val, axis=0).sort_index().groupby(level=0).mean()
-        self.preds_val.columns = ['short', 'flat', 'long']
-        self.preds_ho = pd.concat(preds_ho, axis=0).sort_index().groupby(level=0).mean()
-        self.preds_ho.columns = ['short', 'flat', 'long']
-        f1_val = self.preds_val.merge(self.ps_label, how='inner', right_index=True, left_index=True)
-        f1_ho = self.preds_ho.merge(self.ps_label_ho, how='inner', right_index=True, left_index=True)
+        if estimator_params.get('num_class'):
+            logger.info(f'Scores: Mean: {np.mean([s["multi_logloss"] for s in scores])}  {scores}')
+            self.preds_val = pd.concat(preds_val, axis=0).sort_index().groupby(level=0).mean()
+            self.preds_val.columns = ['short', 'flat', 'long']
+            self.preds_ho = pd.concat(preds_ho, axis=0).sort_index().groupby(level=0).mean()
+            self.preds_ho.columns = ['short', 'flat', 'long']
+        else:
+            self.preds_val = pd.concat(preds_val, axis=0).sort_index().groupby(level=0).mean()
+            self.preds_ho = pd.concat(preds_ho, axis=0).sort_index().groupby(level=0).mean()
+        pred_label_val = self.preds_val.merge(self.ps_label, how='inner', right_index=True, left_index=True)
+        pred_label_ho = self.preds_ho.merge(self.ps_label_ho, how='inner', right_index=True, left_index=True)
 
-        from sklearn.metrics import f1_score
-        print('VALIDATION')
-        for i, side in enumerate(['short', 'flat', 'long']):
-            print(f"{side}: {f1_score(np.where(f1_val['label'] == i, 1, 0), f1_val[side].round().values)}")
-        print('HOLDOUT')
-        for i, side in enumerate(['short', 'flat', 'long']):
-            print(f"{side}: {f1_score(np.where(f1_ho['label'] == i, 1, 0), f1_ho[side].round().values)}")
+        if estimator_params.get('num_class'):
+            from sklearn.metrics import f1_score
+            print('VALIDATION')
+            for i, side in enumerate(['short', 'flat', 'long']):
+                print(f"{side}: {f1_score(np.where(pred_label_val['label'] == i, 1, 0), pred_label_val[side].round().values)}")
+            print('HOLDOUT')
+            for i, side in enumerate(['short', 'flat', 'long']):
+                print(f"{side}: {f1_score(np.where(pred_label_ho['label'] == i, 1, 0), pred_label_ho[side].round().values)}")
+        else:
+            logger.info(f"VALIDATION: MAE: {mean_absolute_error(pred_label_val.iloc[:, 0], pred_label_val['label'])} MSE: {mean_squared_error(pred_label_val.iloc[:, 0], pred_label_val['label'])}")
+            logger.info(f"HOLDOUT: MAE: {mean_absolute_error(pred_label_ho.iloc[:, 0], pred_label_ho['label'])} MSE: {mean_squared_error(pred_label_ho.iloc[:, 0], pred_label_ho['label'])}")
+            logger.info(f"RETURN == 1: MAE: {mean_absolute_error(np.ones(len(pred_label_ho)), pred_label_ho['label'])} MSE: {mean_squared_error(np.ones(len(pred_label_ho)), pred_label_ho['label'])}")
+
+        ho_quantile_mae = {}
+        ho_quantile_rmse = {}
+        quantiles = list(range(1, 10))
+        for quantile in quantiles:
+            threshold = pred_label_ho['label'].quantile(quantile/10)
+            if threshold >= 1:
+                ix = np.where(pred_label_ho.iloc[:, 0] > threshold)[0]
+            else:
+                ix = np.where(pred_label_ho.iloc[:, 0] < threshold)[0]
+            if len(ix) == 0:
+                ho_quantile_mae[quantile] = ho_quantile_rmse[quantile] = None
+            else:
+                ho_quantile_mae[quantile] = mean_absolute_error(pred_label_ho.values[ix, 0], pred_label_ho.values[ix, 1])
+                ho_quantile_rmse[quantile] = mean_squared_error(pred_label_ho.values[ix, 0], pred_label_ho.values[ix, 1])
+        plt.plot(quantiles, ho_quantile_mae.values())
+        plt.xlabel('Quantile MAE, RMSE of K')
+        plt.ylabel('MAE')
+        plt.title('Quantile')
+        plt.show()
+
+        ho_quantile_mae = {}
+        ho_quantile_rmse = {}
+        quantiles = list(range(1, 10))
+        for quantile in quantiles:
+            threshold = pred_label_ho['label'].quantile(quantile / 10)
+            if threshold >= 1:
+                ix = np.where(pred_label_ho.iloc[:, 0] > threshold)[0]
+            else:
+                ix = np.where(pred_label_ho.iloc[:, 0] < threshold)[0]
+            if len(ix) == 0:
+                ho_quantile_mae[quantile] = ho_quantile_rmse[quantile] = None
+            else:
+                ho_quantile_mae[quantile] = mean_absolute_error(np.ones(len(ix)), pred_label_ho.values[ix, 1])
+                ho_quantile_rmse[quantile] = mean_squared_error(np.ones(len(ix)), pred_label_ho.values[ix, 1])
+        plt.plot(quantiles, ho_quantile_mae.values())
+        plt.xlabel('Quantile MAE guessing return == 1')
+        plt.ylabel('MAE')
+        plt.title('Quantile')
+        plt.show()
+
 
         from common.utils.util_func import get_model_fscore
         importances = [get_model_fscore(booster) for booster in self.boosters]
@@ -326,10 +344,11 @@ class EstimateSide:
             pickle.dump(self.preds_val, f)
         with open(os.path.join(Paths.trade_model, self.ex, 'label.p'), 'wb') as f:
             pickle.dump(self.ps_label, f)
-        # self.to_influx()
+        self.to_influx()
 
     def to_influx(self):
         assert len(self.preds_val.index.unique()) == len(self.preds_val), 'Timestamp is not unique. Group By time first before uploading to influx.'
+        self.preds_val = self.preds_val.rename(columns={0: 'predictions'})
         influx.write(
             record=self.preds_val,
             data_frame_measurement_name='predictions',
@@ -340,6 +359,7 @@ class EstimateSide:
                 'ex': self.ex
             }, **self.tags},
         )
+        self.preds_ho = self.preds_ho.rename(columns={0: 'predictions'})
         influx.write(
             record=self.preds_ho,
             data_frame_measurement_name='predictions',
@@ -350,6 +370,60 @@ class EstimateSide:
                 'ex': self.ex
             }, **self.tags},
         )
+
+    def best_k_elbow(self, k_max: int):
+        logger.info('Find optimal # k cluster using Elbow method')
+        sum_squared_distances = []
+        k = list(range(2, k_max))
+        for i, num_clusters in enumerate(k):
+            kmeans = MiniBatchKMeans(n_clusters=num_clusters,
+                                 # random_state=0,
+                                 # batch_size=6,
+                                 max_iter=1000).fit(self.df.values)
+            sum_squared_distances.append(kmeans.inertia_)
+        res = pd.Series(dict(zip(k, sum_squared_distances))).plot()
+        plt.xlabel('Values of K')
+        plt.ylabel('Sum of squared distances/Inertia')
+        plt.title('Elbow Method For Optimal k')
+        plt.show()
+
+    def best_k_silhouette(self, k_max: int, k_min: int = 2):
+        logger.info('Find optimal # k cluster using Silhouette score')
+
+        def silhouette_score(values, cluster_labels):
+            scores = []
+            map_label2vec_internal = {label: values[np.where(cluster_labels == label)[0], :] for label in np.unique(cluster_labels)}
+            map_label2vec_external = {label: values[np.where(cluster_labels != label)[0], :] for label in np.unique(cluster_labels)}
+            for i, label in enumerate(cluster_labels):
+                internal_distance = np.linalg.norm(map_label2vec_internal[label] - values[i], axis=1).mean()
+                external_distance = np.linalg.norm(map_label2vec_external[label] - values[i], axis=1).mean()
+                scores.append((external_distance - internal_distance) / max(internal_distance, external_distance))
+            return np.mean(scores)
+        k = list(range(k_min, k_max))
+        silhouette_avg = []
+        for i, num_clusters in enumerate(k):
+            if i % 10 == 0:
+                print(i)
+            # initialise kmeans
+            kmeans = MiniBatchKMeans(n_clusters=num_clusters, max_iter=1000).fit(self.df.values)
+            # silhouette score
+            silhouette_avg.append(silhouette_score(self.df.values, kmeans.labels_))
+        plt.plot(k, silhouette_avg)
+        plt.xlabel('Values of K')
+        plt.ylabel('Silhouette score')
+        plt.title('Silhouette analysis For Optimal k')
+        plt.show()
+        # Plot Dispersity
+        dct = dict(Counter(kmeans.labels_))
+        tup_lst = [(k, v) for k, v in dct.items()]
+        tup_lst = sorted(tup_lst, key=lambda tup: tup[1], reverse=True)
+        plt.bar(list(range(len(tup_lst))), [tup[1] for tup in tup_lst])
+        plt.xlabel('Cluster Label')
+        plt.ylabel('Count states')
+        plt.title('Points per cluster')
+        plt.show()
+
+        return k[silhouette_avg.index(pd.Series(silhouette_avg).bfill().ffill().min())]
 
 
 if __name__ == '__main__':
@@ -363,5 +437,10 @@ if __name__ == '__main__':
         end=datetime.datetime(2022, 3, 2),
     )
     inst.assemble_frame()
+    # inst.best_k_elbow(100)
+    # inst.best_k_silhouette(50, 50)
+    # k ==50 is okay. rather have more than fewer. only useful if actually disperse. means some k have
+    # much larger count than others... need dispersity measure for each k like median cnt?
     inst.train()
     inst.save()
+    logger.info(f'Done. Ex: {inst.ex}')

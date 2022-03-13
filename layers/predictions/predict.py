@@ -70,10 +70,10 @@ class Predict:
                 pss.append(Upsampler(df.iloc[:, 0]).upsample(window_agg.window, window_agg.aggregator))
             df = pd.concat(pss, axis=1, sort=True)
 
-            with open(os.path.join(Paths.lib_path, 'dfpredict.p'), 'wb') as f:
+            with open(os.path.join(Paths.data, 'dfpredict.p'), 'wb') as f:
                 pickle.dump(df, f)
         else:
-            with open(os.path.join(Paths.lib_path, 'dfpredict.p'), 'rb') as f:
+            with open(os.path.join(Paths.data, 'dfpredict.p'), 'rb') as f:
                 df = pickle.load(f)
         preds = []
         for m in self.models:
