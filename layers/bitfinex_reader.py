@@ -22,6 +22,18 @@ class BitfinexReader:
                 if start <= fn_date < end + datetime.timedelta(days=1):
                     try:
                         df = pd.read_csv(os.path.join(directory, fn), compression='gzip', header=None)
+                        # bad value
+                        def is_float(val):
+                            try:
+                                float(val)
+                                return True
+                            except:
+                                return False
+                        ix_drop = df.index[(~df[0].apply(is_float))]
+                        if len(ix_drop) > 0:
+                            logger.info(f'Dropping {len(ix_drop)}. Time not float. File capture was interrupted on server likely.')
+                            df = df.drop(ix_drop).reset_index(drop=True)
+
                         df[0] = pd.to_datetime(df[0].astype(float) * 1000 ** 3, origin=fn_date).dt.round('ms')  # float issue giving imprecise ns when converting to dt
                     except pd.errors.EmptyDataError:
                         logger.info(f'No Data for {fn_date}')
@@ -55,7 +67,7 @@ class BitfinexReader:
         df.columns = cls.schema_quote
         # amount > 0: Bid < 0 Ask. count 0: deleted
         df['side'] = (df['size'] > 0).map({True: 1, False: -1})
-        df['side'].loc[df.index[df['count'] == 0]] = 0
+        # df['side'].loc[df.index[df['count'] == 0]] = 0
         df['timestamp'] = df['timestamp'].dt.tz_localize('UTC')
         return df
 

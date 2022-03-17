@@ -15,7 +15,7 @@ bitfinex:
       usd: 150_000
     order book:
       level_from_price_pct: 1
-      resample_sec: 15
+      delta_size_ratio: 0.5
     trade sequence:
       ethusd: 100
       tick: 500
@@ -25,22 +25,22 @@ bitfinex:
       unit_size: 5
     order book:
       level_from_price_pct: 1
-      resample_sec: 15
+      delta_size_ratio: 0.5
   solusd:
     price:
       unit_size:
     order book:
       level_from_price_pct: 1
-      resample_sec: 15
+      delta_size_ratio: 0.5
   adausd:
     price:
       unit_size:
     order book:
       level_from_price_pct: 1
-      resample_sec: 15
+      delta_size_ratio: 0.5
   xrpusd:
     price:
       unit_size:
     order book:
       level_from_price_pct: 1
-      resample_sec: 15
+      delta_size_ratio: 0.5

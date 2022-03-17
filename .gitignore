@@ -17,5 +17,3 @@
 /connector/mysql/**
 /trader/train/**
 /trader/plot/**
-**/venv/**
-/venv/
