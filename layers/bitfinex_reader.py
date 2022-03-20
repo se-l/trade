@@ -40,7 +40,7 @@ class BitfinexReader:
                         continue
                     df_lst.append(df)
             break
-        logger.info(f'Concatenating {len(df_lst)} dataframes ...')
+        # logger.info(f'Concatenating {len(df_lst)} dataframes ...')
         df = pd.concat(df_lst).reset_index(drop=True)
         return df
 

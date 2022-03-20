@@ -1,8 +1,8 @@
 import datetime
+import yaml
 
-from common.modules.assets import Assets
 from common.modules.logger import logger
-from common.modules.enums import Exchange
+from common.paths import Paths
 from layers.bars.base_bar import BaseBar
 from layers.exchange_reader import ExchangeDataReader
 
@@ -28,40 +28,46 @@ class TradeVolumeBars(BaseBar):
 
     def add_measurable(self, df):
         if self.unit == 'tick':
-            df['measurable'] = df['side']
+            df['measurable'] = df['side'].abs()  # for volume interested in abs # cnt ticks, unlike imbalance measures
         elif self.unit == self.sym:
             df['measurable'] = df['side'] * df['size']
-        elif self.unit == 'usd':
+        elif self.unit == 'usd' and self.sym[-3:].lower() == 'usd':
             df['measurable'] = df['side'] * df['size'] * df['price']
-        # elif self.unit == 'xbt':
-        #     df['measurable'] = df['side'] * df['homeNotional']
         else:
             raise NotImplemented
         return df
 
 
 if __name__ == '__main__':
-    """
-    bitmex:     tick: 500, usd: 100M, ethusd: 100k
-    bitfinex:   tick: , usd: 100_000, ethusd: 
-    """
-    unit = 'usd'
-    unit_size = 100_000
-
-    for side in [None, -1, 1]:
-        bar = TradeVolumeBars(
-            exchange=Exchange.bitfinex,
-            sym=Assets.ethusd,
-            start=datetime.datetime(2022, 2, 6),
-            end=datetime.datetime(2022, 3, 2),
-            unit=unit,
-            unit_size=unit_size,
-            side=side,
-        )
-        df = bar.resample()
-        logger.info(f'Resampled df of shape: {df.shape}')
-        print(df.head())
-        print(df.tail())
-        bar.to_influx(df)
-        logger.info('Done')
+    information = 'volume'
+    with open(Paths.layer_settings, "r") as stream:
+        settings = yaml.safe_load(stream)
+    for exchange in settings.keys():
+        for asset, params in settings[exchange].items():
+            if not params.get(information):
+                continue
+            for unit in ['tick', 'usd', asset]:
+                unit_size = params[information].get(unit, {})
+                if not unit_size:
+                    continue
+                for side in [None, -1, 1]:
+                    logger.info(f'{information} - side: {side} - {asset.upper()} - {unit} - {unit_size}')
+                    # if asset != 'btcusd' and unit != 'btcusd' and side is not None:
+                    #     continue
+                    bar = TradeVolumeBars(
+                        exchange=exchange,
+                        sym=asset,
+                        start=datetime.datetime(2022, 2, 7),
+                        end=datetime.datetime(2022, 3, 13),
+                        unit=unit,
+                        unit_size=unit_size,
+                        side=side,
+                    )
+                    df = bar.resample()
+                    if side is None:
+                        if df.shape[0] / (bar.end - bar.start).days < 500:
+                            logger.warning(f'Decrease threshold for {asset.upper()} - {unit} - {unit_size}')
+                        logger.info(f'Resampled df of shape: {df.shape}. Points per day: {df.shape[0] / (bar.end - bar.start).days}')
+                    bar.to_influx(df)
+    logger.info('Done')
 

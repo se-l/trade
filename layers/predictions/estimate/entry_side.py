@@ -1,18 +1,18 @@
 import pickle
 import os
 import datetime
-from collections import Counter
-
 import pandas as pd
 import lightgbm as lgb
 import numpy as np
 import matplotlib.pyplot as plt
 
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-from scipy.stats import gmean
+from collections import Counter
+
+from common.interfaces.iestimate import IEstimate
+from common.interfaces.iload_xy import ILoadXY
 from common.modules.logger import logger
 from itertools import product
-from functools import reduce
 from sklearn.model_selection import KFold
 from sklearn.cluster import MiniBatchKMeans
 from common.modules.assets import Assets
@@ -21,23 +21,11 @@ from common.utils.util_func import ex
 from common.utils.window_aggregator import WindowAggregator
 from connector.influxdb.influxdb_wrapper import influx
 from common.paths import Paths
-from layers.features.upsampler import Upsampler
-from layers.predictions.event_extractor import EventExtractor
-from common.utils.util_func import is_stationary
+from layers.predictions.load_xy import LoadXY
 from layers.predictions.sample_weights import SampleWeights
 
-"""
-Continue picking samples from parts where a series has values beyond expectation. say 2 sigma away.
-Todo:
-- Given any Influx raw data set with high granularity:
-    - aggregate on a range of time frames: 
-    - use multiple aggregation functions, either from Influx or custom
-    - what's beyond expectation: gaussian and sigma? Moving averages with bands? smoothing + range: what's range: smoothing would be a function of the aggregation time window
-        what if it's trending? run the stationarity test before. if fails, exclude that series!
-"""
 
-
-class EstimateSide:
+class EstimateSide(IEstimate):
     """Estimate side by:
     - Loading label ranges from inlux
     - Samples are events where series diverges from expectation: load from inlux
@@ -48,14 +36,8 @@ class EstimateSide:
     - ToInflux: Signed estimates
     """
 
-    def __init__(self, exchange: Exchange, sym, start: datetime, end: datetime, labels=None, signals=None, features=None):
-        self.exchange = exchange
-        self.sym = sym
-        self.start = start
-        self.end = end
-        self.labels = labels
-        self.signals = signals
-        self.features = features
+    def __init__(self, load_xy=None):
+        self.load_xy: ILoadXY = load_xy
         self.window_aggregator_window = [int(2**i) for i in range(20)]
         self.window_aggregator_func = ['sum']
         self.window_aggregators = [WindowAggregator(window, func) for (window, func) in product(self.window_aggregator_window, self.window_aggregator_func)]
@@ -65,138 +47,11 @@ class EstimateSide:
         logger.info(self.ex)
         self.df = None
 
-    def load_label(self, df: pd.DataFrame) -> (pd.DataFrame, pd.Series):
-        df_label = influx.query(query=influx.build_query(predicates={'_measurement': 'label', 'exchange': self.exchange.name, 'asset': self.sym.name,
-                                                                     # 'expiration_window': '180min', '_field': 'label'},
-                                                                     'ewm_span': '60min', '_field': 'forward_return_ewm'},
-                                                         start=self.start,
-                                                         end=self.end),
-                                return_more_tables=False
-                                )
-        df_label.columns = ['label']
-        df_m = df.merge(df_label, how='outer', left_index=True, right_index=True).sort_index()
-        df_m = self.curtail_nnan_front_end(df_m).ffill()
-        df_m = df_m.iloc[df_m.isna().sum().max():]
-        assert df_m.isna().sum().sum() == 0
-        # return df_m[[c for c in df_m.columns if c != 'label']], df_m['label'] + 1  # multi class label
-        return df_m[[c for c in df_m.columns if c != 'label']], df_m['label']  # return label
-
-    @staticmethod
-    def curtail_nnan_front_end(df):
-        iloc_begin = np.argmax((~np.isnan(df.values)), axis=0)
-        for i, iloc in enumerate(iloc_begin):
-            if iloc == 0 and np.isnan(df.values[0, i]):
-                iloc_begin[i] = np.isnan(df.values[:, i]).sum()
-        iloc_begin = iloc_begin.max()
-        iloc_end = len(df) - np.argmax((~np.isnan(df.values[::-1])), axis=0).max()
-        return df.iloc[iloc_begin:iloc_end]
-
-    def load_sample_from_signals(self, df) -> pd.Index:
-        """
-        Order book imbalance > thresh.
-        Sample space limiting vs non-sample sapce limiting
-        """
-        # for ... in self.window_aggregators
-        return pd.Index(reduce(lambda res, item: res.union(set(item)), (EventExtractor(thresholds=[2, 2])(df[col], 500) for col in df.columns), set()))
-
-    def apply_embargo(self):
-        pass
-
-    def calc_weights(self):
-        pass
-
-    def load_features(self) -> pd.DataFrame:
-        """order book imbalance, tick imbalance, sequence etc."""
-        logger.info(f'Loading features. Book...')
-        df_book = influx.query(query=influx.build_query(predicates={'_measurement': 'order book', 'exchange': self.exchange.name, 'asset': self.sym.name},
-                                                                   start=self.start,
-                                                                   end=self.end),
-                                          return_more_tables=True
-                                          )
-        logger.info('Influx Order book queried')
-        df_book = self.exclude_non_stationary(df_book)
-        df_book = pd.concat([Upsampler(df_book[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in product(df_book.columns, self.window_aggregators)],
-                            sort=True, axis=1)
-        logger.info('Order book done')
-        df_trade_imbalance = influx.query(query=influx.build_query(predicates={'_measurement': 'trade bars',
-                                                                               'exchange': self.exchange.name,
-                                                                               'asset': self.sym.name,
-                                                                               'information': 'imbalance'
-                                                                               },
-                                                                    start=self.start,
-                                                                    end=self.end),
-                                           return_more_tables=True
-                                )
-        df_trade_imbalance = self.exclude_non_stationary(df_trade_imbalance)
-        df_trade_imbalance = pd.concat([Upsampler(df_trade_imbalance[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in product(df_trade_imbalance.columns, self.window_aggregators)],
-                               sort=True, axis=1)
-        df_trade_sequence = influx.query(query=influx.build_query(predicates={'_measurement': 'trade bars', 'exchange': self.exchange.name, 'asset': self.sym.name,
-                                                                              'information': 'sequence'},
-                                                                   start=self.start,
-                                                                   end=self.end),
-                                          return_more_tables=True
-                                          )
-        df_trade_sequence = self.exclude_non_stationary(df_trade_sequence)
-        logger.info('Influx Trade book queried')
-        df_trade_sequence = pd.concat(
-            [Upsampler(df_trade_sequence[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in product(df_trade_sequence.columns, self.window_aggregators)],
-            sort=True, axis=1)
-        logger.info('Trade book done')
-        df = pd.concat((df_book, df_trade_imbalance, df_trade_sequence), sort=True, axis=1)
-        df = self.exclude_too_little_data(df)
-        # ffill after curtailing to avoid arriving at incorrect states for timeframes where information has simply not been loaded
-        df = self.curtail_nnan_front_end(df).ffill()
-        df = self.exclude_too_little_data(df)
-        df = df.iloc[df.isna().sum().max():]
-        assert df.isna().sum().sum() == 0
-        return df
-
-    @staticmethod
-    def exclude_too_little_data(df) -> pd.DataFrame:
-        iloc_begin = np.argmax((~np.isnan(df.values)), axis=0)
-        for i, iloc in enumerate(iloc_begin):
-            if iloc == 0:
-                iloc_begin[i] = np.isnan(df.values[:, i]).sum()
-        iloc_end = len(df) - np.argmax((~np.isnan(df.values[::-1])), axis=0)
-        # exclude whose range is too small. series with high resolution will have small data cnt, still large range
-        mean_range = (iloc_end-iloc_begin).mean()
-        col_range = dict(zip(list(df.columns), (iloc_end-iloc_begin) > mean_range))
-
-        # ps_cnt_nonna = df.isna().sum().to_dict()
-        # mean_cnt_non_na = np.mean(list(ps_cnt_nonna.values()))
-        # ex_cols = r"\n".join([c for c, cnt in ps_cnt_nonna.items() if cnt > mean_cnt_non_na])
-        logger.info(f'Removing columns having range <{mean_range} NANs`: {[c for c in col_range.keys() if not col_range[c]]}')
-        return df[[c for c in col_range.keys() if col_range[c]]]
-
-    @staticmethod
-    def exclude_non_stationary(df) -> pd.DataFrame:
-        def f(ps: pd.Series):
-            res = is_stationary(ps[ps.notna()].values)
-            if not res:
-                logger.warning(f'{ps.name} is not stationary. Excluding!')
-            return res
-        return df[[c for c in df.columns if f(df[c])]]
-
-    def assemble_frame(self):
-        if False:
-            self.df = self.load_features()
-            with open(os.path.join(Paths.data, 'df.p'), 'wb') as f:
-                pickle.dump(self.df, f)
-            # with open(os.path.join(Paths.data, 'label.p'), 'wb') as f:
-            #     pickle.dump(self.ps_label, f)
-        else:
-            with open(os.path.join(Paths.data, 'df.p'), 'rb') as f:
-                self.df = pickle.load(f)
-            # with open(os.path.join(Paths.data, 'label.p'), 'rb') as f:
-            #     self.ps_label = pickle.load(f)
-        self.df, self.ps_label = self.load_label(self.df)
-        # ts_sample = self.load_sample_from_signals(self.df)  # samples
-        ts_sample = pd.Index(reduce(lambda res, item: res.union(set(item)), (EventExtractor(thresholds=[1, 1])(self.df[col], len(self.df) / 10) for col in self.df.columns), set()))
-        logger.info(f'len ts_sample: {len(ts_sample)} - {100 * len(ts_sample) / len(self.df)} of df')
-        if not ts_sample.empty:
-            ix_sample = ts_sample.intersection(self.ps_label.index)
-            self.df, self.ps_label = self.df.loc[ix_sample].sort_index(), self.ps_label.loc[ix_sample].sort_index()
-        logger.info(f'DF Shape: {self.df.shape}')
+    def load_inputs(self):
+        self.load_xy.assemble_frames()
+        # apply sampling and purging separately perhaps
+        self.df = self.load_xy.df
+        self.ps_label = self.load_xy.ps_label
 
     @staticmethod
     def purge_overlap(train_index, test_index, i=250):
@@ -429,14 +284,12 @@ class EstimateSide:
 if __name__ == '__main__':
     exchange = Exchange.bitfinex
     sym = Assets.ethusd
+    start = datetime.datetime(2022, 2, 7)
+    end = datetime.datetime(2022, 3, 2)
 
     inst = EstimateSide(
-        exchange=exchange,
-        sym=sym,
-        start=datetime.datetime(2022, 2, 7),
-        end=datetime.datetime(2022, 3, 2),
+        load_xy=LoadXY(exchange=exchange, sym=sym, start=start, end=end, labels=None, signals=None, features=None)
     )
-    inst.assemble_frame()
     # inst.best_k_elbow(100)
     # inst.best_k_silhouette(50, 50)
     # k ==50 is okay. rather have more than fewer. only useful if actually disperse. means some k have

@@ -37,7 +37,7 @@ class LabelReturn:
         weights = np.array([(1 - alpha) ** i for i in range(self.int_span)])
 
         forward_return = [(arr*weights + 1).prod() for arr in np.lib.stride_tricks.sliding_window_view(ps.values, window_shape=self.int_span)]
-        return pd.DataFrame(forward_return, index=ps.index[:-self.int_span+1], columns=['forward_return_ewm'])
+        return pd.DataFrame(forward_return[1:], index=ps.index[:-self.int_span], columns=['forward_return_ewm'])
 
     @property
     def int_span(self) -> int:
@@ -59,22 +59,22 @@ class LabelReturn:
 
 
 if __name__ == '__main__':
+    information = 'EWM Span return label'
     exchange = Exchange.bitfinex
     sym = Assets.ethusd
-
-    bar = LabelReturn(
-        exchange=exchange,
-        sym=sym,
-        start=datetime.datetime(2022, 2, 7),
-        end=datetime.datetime(2022, 3, 2),
-        resampling_rule='1min',
-        ewm_span='5min',  # letter must match resampling letter
-    )
-    df = bar.label()
-    logger.info(f'Resampled df of shape: {df.shape}')
-    print(df.head())
-    print(df.tail())
-    # should reference the underlying volatilty curve somewhere and add as parameter
-    assert len(df.index.unique()) == len(df), 'Timestamp is not unique. Group By time first before uploading to influx.'
-    bar.to_influx(df)
+    for ewm_span in [2**span for span in range(7)]:
+        logger.info(f'{information} - {sym.upper()} - ewm_span min: {ewm_span}')
+        bar = LabelReturn(
+            exchange=exchange,
+            sym=sym,
+            start=datetime.datetime(2022, 2, 7),
+            end=datetime.datetime(2022, 3, 13),
+            resampling_rule='1min',
+            ewm_span=f'{ewm_span}min'  # letter must match resampling letter
+        )
+        df = bar.label()
+        logger.info(f'Resampled df of shape: {df.shape}')
+        # should reference the underlying volatilty curve somewhere and add as parameter
+        assert len(df.index.unique()) == len(df), 'Timestamp is not unique. Group By time first before uploading to influx.'
+        bar.to_influx(df)
     logger.info('Done')

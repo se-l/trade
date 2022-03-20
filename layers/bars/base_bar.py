@@ -10,11 +10,11 @@ class BaseBar:
     information = None
 
     def __init__(self, exchange: Exchange, sym: Assets, start, end, unit, **tags):
-        logger.warning(
-            'Refactor to automatically find a unit size that has a sufficient resolution. Say 1000 per day. '
-            'During training derive upsampled features, cumsum. moving averages.'
-            'Expecting lowest resolution having no predictive value, while upsampled cumsum"s will have.'
-        )
+        # logger.warning(
+        #     'Refactor to automatically find a unit size that has a sufficient resolution. Say 1000 per day. '
+        #     'During training derive upsampled features, cumsum. moving averages.'
+        #     'Expecting lowest resolution having no predictive value, while upsampled cumsum"s will have.'
+        # )
         self.exchange = exchange
         self.sym = sym
         self.start = start

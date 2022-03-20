@@ -106,6 +106,7 @@ class OrderBook:
         df['best_bid'] = df['best_bid'].bfill()
         # df = df.iloc[1000:].reset_index(drop=True)
         df = df[~df['price'].isna()]
+        df = df[~df['size'].isna()]
         df = self.impute_nan_count(df)
         assert df.isna().sum().sum() == 0, 'NANs at this step. why?'
         assert (df['best_ask'] < df['best_bid']).sum() == 0
@@ -159,7 +160,7 @@ class OrderBook:
     @property
     @lru_cache()
     def level(self) -> int:
-        return int((self.df_quotes['price'] * self.level_from_price_pct / 100).max() / self.level_distance)
+        return min(int((self.df_quotes['price'] * self.level_from_price_pct / 100).max() / self.level_distance), 300)
 
     def derive_events(self):
         df = self.df_quotes
@@ -226,18 +227,16 @@ if __name__ == '__main__':
         settings = yaml.safe_load(stream)
     for exchange in settings.keys():
         for asset, params in settings[exchange].items():
-            if asset not in ['solusd']:
-            # if asset not in ['xrpusd', 'adausd']: # 'solusd':
+            if asset not in ['solusd']:  # continue from march 8
+            # if asset not in ['xrpusd']:
                 continue
-            # try:
+
             logger.info(f'Loading order book for {exchange} - {asset}')
             params = params.get('order book', {})
             delta_size_ratio = params.get('delta_size_ratio')
             from layers.bitfinex_reader import BitfinexReader
-            start = datetime.datetime(2022, 2, 20)
-            # start = datetime.datetime(2022, 2, 16)
-            end = datetime.datetime(2022, 3, 15)
-            # end = datetime.datetime(2022, 2, 12)
+            start = datetime.datetime(2022, 2, 7)
+            end = datetime.datetime(2022, 3, 13)
             for i in range(1 + (end-start).days):
                 dt = start + datetime.timedelta(days=i)
                 logger.info(f'Running {dt}')
@@ -284,8 +283,5 @@ if __name__ == '__main__':
                             'delta_size_ratio': delta_size_ratio
                         }},
                     )
-            # except Exception as e:
-            #     logger.warning(f'{exchange} - {asset} - Price')
-            #     logger.warning(f'{e}')
     logger.info('Done')
 

@@ -1,9 +1,10 @@
+import yaml
 import numpy as np
 import datetime
 import pandas as pd
 
-from common.modules.assets import Assets
 from common.modules.logger import logger
+from common.paths import Paths
 from common.modules.enums import Exchange
 from layers.bars.base_bar import BaseBar
 from layers.exchange_reader import ExchangeDataReader
@@ -18,11 +19,11 @@ class SequenceBar(BaseBar):
     def resample(self) -> pd.DataFrame:
         df = ExchangeDataReader.load_trades(self.exchange, self.sym, self.start, self.end)
 
-        df_up = df[df['side'] == 1]
+        df_up = df[df['side'] == 1].copy()
         self.add_measurable(df_up)
         df_up['measurable_cum_up'] = df_up['measurable'].cumsum()
 
-        df_down = df[df['side'] == -1]
+        df_down = df[df['side'] == -1].copy()
         self.add_measurable(df_down)
         df_down['measurable_cum_down'] = df_down['measurable'].cumsum()
 
@@ -35,8 +36,8 @@ class SequenceBar(BaseBar):
             iloc_up = np.argmax(df['measurable_cum_up'].values >= self.unit_size)
             if iloc_up == iloc_down == 0:
                 break
-            iloc_up = 10**99 if iloc_up == 0 else iloc_up
-            iloc_down = 10**99 if iloc_down == 0 else iloc_down
+            iloc_up = 10 ** 99 if iloc_up == 0 else iloc_up
+            iloc_down = 10 ** 99 if iloc_down == 0 else iloc_down
 
             if iloc_down == iloc_up:
                 direction = 0
@@ -61,8 +62,10 @@ class SequenceBar(BaseBar):
             df['measurable'] = df['side']
         elif self.unit == self.sym:
             df['measurable'] = df['side'] * df['size']
-        elif self.unit == 'usd':
+        elif self.unit == 'usd' and self.exchange == Exchange.bitmex:
             df['measurable'] = df['side'] * df['grossValue']
+        elif self.unit == 'usd' and self.sym[-3:].lower() == 'usd':
+            df['measurable'] = df['size'] * df['price']
         elif self.unit == 'xbt':
             df['measurable'] = df['side'] * df['homeNotional']
         else:
@@ -71,22 +74,30 @@ class SequenceBar(BaseBar):
 
 
 if __name__ == '__main__':
-    """tick: 500, usd: 1B, ethusd: 1M"""
-    unit = 'ethusd'
-    unit_size = 100
-
-    bar = SequenceBar(
-        exchange=Exchange.bitfinex,
-        sym=Assets.ethusd,
-        start=datetime.datetime(2022, 2, 7),
-        end=datetime.datetime(2022, 3, 2),
-        unit=unit,
-        unit_size=unit_size,
-    )
-    df = bar.resample()
-
-    logger.info(f'Resampled df of shape: {df.shape}')
-    print(df.head())
-    print(df.tail())
-    bar.to_influx(df)
+    information = 'sequence'
+    with open(Paths.layer_settings, "r") as stream:
+        settings = yaml.safe_load(stream)
+    for exchange in settings.keys():
+        for asset, params in settings[exchange].items():
+            if not params.get('trade sequence'):
+                continue
+            for unit in ['tick', 'usd', asset]:
+                unit_size = params['trade sequence'].get(unit, {})
+                if not unit_size:
+                    continue
+                logger.info(f'{information} - {asset.upper()} - {unit} - {unit_size}')
+                bar = SequenceBar(
+                    exchange=exchange,
+                    sym=asset,
+                    start=datetime.datetime(2022, 2, 7),
+                    end=datetime.datetime(2022, 3, 13),
+                    unit=unit,
+                    unit_size=unit_size,
+                )
+                df = bar.resample()
+                df = df['sequence_direction'].groupby(level=0).sum()
+                bar.to_influx(df[df != 0])
+                if df.shape[0] / (bar.end - bar.start).days < 500:
+                    logger.warning(f'Decrease threshold for {asset.upper()} - {unit} - {unit_size}')
+                logger.info(f'Resampled df of shape: {df.shape}. Points per day: {df.shape[0] / (bar.end - bar.start).days}')
     logger.info('Done')
