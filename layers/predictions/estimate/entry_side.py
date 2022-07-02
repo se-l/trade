@@ -1,6 +1,7 @@
-import pickle
-import os
 import datetime
+import os
+import pickle
+
 import pandas as pd
 import lightgbm as lgb
 import numpy as np
@@ -17,15 +18,15 @@ from sklearn.model_selection import KFold
 from sklearn.cluster import MiniBatchKMeans
 from common.modules.assets import Assets
 from common.modules.exchange import Exchange
+from common.paths import Paths
 from common.utils.util_func import ex
 from common.utils.window_aggregator import WindowAggregator
-from connector.influxdb.influxdb_wrapper import influx
-from common.paths import Paths
+from layers.predictions.estimate.base import EstimateBase
 from layers.predictions.load_xy import LoadXY
 from layers.predictions.sample_weights import SampleWeights
 
 
-class EstimateSide(IEstimate):
+class EstimateSide(EstimateBase):
     """Estimate side by:
     - Loading label ranges from inlux
     - Samples are events where series diverges from expectation: load from inlux
@@ -36,7 +37,7 @@ class EstimateSide(IEstimate):
     - ToInflux: Signed estimates
     """
 
-    def __init__(self, load_xy=None):
+    def __init__(self, sym: Assets, load_xy=None, thresholds=(1.005, 0.995)):
         self.load_xy: ILoadXY = load_xy
         self.window_aggregator_window = [int(2**i) for i in range(20)]
         self.window_aggregator_func = ['sum']
@@ -46,12 +47,24 @@ class EstimateSide(IEstimate):
         self.ex = ex(sym)
         logger.info(self.ex)
         self.df = None
+        self.thresholds = thresholds
 
-    def load_inputs(self):
+    def load_inputs(self, features=None):
         self.load_xy.assemble_frames()
         # apply sampling and purging separately perhaps
         self.df = self.load_xy.df
-        self.ps_label = self.load_xy.ps_label
+        if features:
+            self.df = self.df[[f.replace('order_book', 'order book').replace('trade_bars', 'trade bars') for f in features]]
+        self.ps_label_return = self.load_xy.ps_label
+        self.ps_label = self.return2class_label(self.ps_label_return)
+
+    def return2class_label(self, ps):
+        ix_short = ps.index[ps < self.thresholds[-1]]
+        ix_long = ps.index[ps > self.thresholds[0]]
+        ps2 = pd.Series(np.zeros(len(ps)), index=ps.index, name='label')
+        ps2.loc[ix_short] = -1
+        ps2.loc[ix_long] = 1
+        return ps2 + 1
 
     @staticmethod
     def purge_overlap(train_index, test_index, i=250):
@@ -79,23 +92,34 @@ class EstimateSide(IEstimate):
         self.ps_label = ps_label
         self.df_ho = df_ho
         self.ps_label_ho = ps_label_ho
+        try:
+            os.mkdir(os.path.join(Paths.trade_model, self.ex))
+        except:
+            pass
+        with open(os.path.join(Paths.trade_model, self.ex, 'return_val.p'), 'wb') as f:
+            pickle.dump(self.ps_label_return.iloc[:n_cv], f)
+        with open(os.path.join(Paths.trade_model, self.ex, 'return_ho.p'), 'wb') as f:
+            pickle.dump(self.ps_label_return.iloc[-n_ho:], f)
 
     def train(self):
         self.split_ho()
         kf = KFold(n_splits=5, shuffle=False)
         estimator_params = {
-            'objective': 'huber',
-            # 'objective': 'multiclass',
+            'objective': 'multiclass',
             'verbosity': 0,
             'learning_rate': 0.1,
-            # 'num_class': 3,
-            'early_stopping_round': 20,
+            'early_stopping_round': 100,
+            'num_class': 3,
+            'boosting_type': 'gbdt',
+            'num_iterations': 1000,
+            'device': 'gpu'
         }
         preds_val = []
         preds_ho = []
-        arr_weight = SampleWeights(ps_label=self.ps_label, df=self.df).\
+        arr_weight = SampleWeights(ps_label=self.ps_label_return.loc[self.ps_label.index], df=self.df).\
             return_attribution_sample_weights().\
-            cluster_sample_weight(50).geometric_mean()
+            geometric_mean()
+            # cluster_sample_weight(50)
 
         scores = []
         for train_index, test_index in kf.split(self.df.index):
@@ -121,110 +145,9 @@ class EstimateSide(IEstimate):
         else:
             self.preds_val = pd.concat(preds_val, axis=0).sort_index().groupby(level=0).mean()
             self.preds_ho = pd.concat(preds_ho, axis=0).sort_index().groupby(level=0).mean()
-        pred_label_val = self.preds_val.merge(self.ps_label, how='inner', right_index=True, left_index=True)
-        pred_label_ho = self.preds_ho.merge(self.ps_label_ho, how='inner', right_index=True, left_index=True)
 
-        if estimator_params.get('num_class'):
-            from sklearn.metrics import f1_score
-            print('VALIDATION')
-            for i, side in enumerate(['short', 'flat', 'long']):
-                print(f"{side}: {f1_score(np.where(pred_label_val['label'] == i, 1, 0), pred_label_val[side].round().values)}")
-            print('HOLDOUT')
-            for i, side in enumerate(['short', 'flat', 'long']):
-                print(f"{side}: {f1_score(np.where(pred_label_ho['label'] == i, 1, 0), pred_label_ho[side].round().values)}")
-        else:
-            logger.info(f"VALIDATION: MAE: {mean_absolute_error(pred_label_val.iloc[:, 0], pred_label_val['label'])} MSE: {mean_squared_error(pred_label_val.iloc[:, 0], pred_label_val['label'])}")
-            logger.info(f"HOLDOUT: MAE: {mean_absolute_error(pred_label_ho.iloc[:, 0], pred_label_ho['label'])} MSE: {mean_squared_error(pred_label_ho.iloc[:, 0], pred_label_ho['label'])}")
-            logger.info(f"RETURN == 1: MAE: {mean_absolute_error(np.ones(len(pred_label_ho)), pred_label_ho['label'])} MSE: {mean_squared_error(np.ones(len(pred_label_ho)), pred_label_ho['label'])}")
-
-        ho_quantile_mae = {}
-        ho_quantile_rmse = {}
-        quantiles = list(range(1, 10))
-        for quantile in quantiles:
-            threshold = pred_label_ho['label'].quantile(quantile/10)
-            if threshold >= 1:
-                ix = np.where(pred_label_ho.iloc[:, 0] > threshold)[0]
-            else:
-                ix = np.where(pred_label_ho.iloc[:, 0] < threshold)[0]
-            if len(ix) == 0:
-                ho_quantile_mae[quantile] = ho_quantile_rmse[quantile] = None
-            else:
-                ho_quantile_mae[quantile] = mean_absolute_error(pred_label_ho.values[ix, 0], pred_label_ho.values[ix, 1])
-                ho_quantile_rmse[quantile] = mean_squared_error(pred_label_ho.values[ix, 0], pred_label_ho.values[ix, 1])
-        plt.plot(quantiles, ho_quantile_mae.values())
-        plt.xlabel('Quantile MAE, RMSE of K')
-        plt.ylabel('MAE')
-        plt.title('Quantile')
-        plt.show()
-
-        ho_quantile_mae = {}
-        ho_quantile_rmse = {}
-        quantiles = list(range(1, 10))
-        for quantile in quantiles:
-            threshold = pred_label_ho['label'].quantile(quantile / 10)
-            if threshold >= 1:
-                ix = np.where(pred_label_ho.iloc[:, 0] > threshold)[0]
-            else:
-                ix = np.where(pred_label_ho.iloc[:, 0] < threshold)[0]
-            if len(ix) == 0:
-                ho_quantile_mae[quantile] = ho_quantile_rmse[quantile] = None
-            else:
-                ho_quantile_mae[quantile] = mean_absolute_error(np.ones(len(ix)), pred_label_ho.values[ix, 1])
-                ho_quantile_rmse[quantile] = mean_squared_error(np.ones(len(ix)), pred_label_ho.values[ix, 1])
-        plt.plot(quantiles, ho_quantile_mae.values())
-        plt.xlabel('Quantile MAE guessing return == 1')
-        plt.ylabel('MAE')
-        plt.title('Quantile')
-        plt.show()
-
-
-        from common.utils.util_func import get_model_fscore
-        importances = [get_model_fscore(booster) for booster in self.boosters]
-        res = pd.DataFrame(importances).mean(axis=0).sort_values(ascending=False)
-        logger.info(res)
-
-    def save(self):
-        """
-        Models
-        Feat importance !!!!!!!!!!!!!!!!!
-        Influx
-        """
-        try:
-            os.mkdir(os.path.join(Paths.trade_model, self.ex))
-        except FileExistsError:
-            pass
-        with open(os.path.join(Paths.trade_model, self.ex, 'boosters.p'), 'wb') as f:
-            pickle.dump(self.boosters, f)
-        with open(os.path.join(Paths.trade_model, self.ex, 'preds.p'), 'wb') as f:
-            pickle.dump(self.preds_val, f)
-        with open(os.path.join(Paths.trade_model, self.ex, 'label.p'), 'wb') as f:
-            pickle.dump(self.ps_label, f)
-        self.to_influx()
-
-    def to_influx(self):
-        assert len(self.preds_val.index.unique()) == len(self.preds_val), 'Timestamp is not unique. Group By time first before uploading to influx.'
-        self.preds_val = self.preds_val.rename(columns={0: 'predictions'})
-        influx.write(
-            record=self.preds_val,
-            data_frame_measurement_name='predictions',
-            data_frame_tag_columns={**{
-                'exchange': self.exchange.name,
-                'asset': self.sym.name,
-                'information': 'CV',
-                'ex': self.ex
-            }, **self.tags},
-        )
-        self.preds_ho = self.preds_ho.rename(columns={0: 'predictions'})
-        influx.write(
-            record=self.preds_ho,
-            data_frame_measurement_name='predictions',
-            data_frame_tag_columns={**{
-                'exchange': self.exchange.name,
-                'asset': self.sym.name,
-                'information': 'HO',
-                'ex': self.ex
-            }, **self.tags},
-        )
+        self.pred_label_val = self.preds_val.merge(self.ps_label, how='inner', right_index=True, left_index=True)
+        self.pred_label_ho = self.preds_ho.merge(self.ps_label_ho, how='inner', right_index=True, left_index=True)
 
     def best_k_elbow(self, k_max: int):
         logger.info('Find optimal # k cluster using Elbow method')
@@ -285,15 +208,20 @@ if __name__ == '__main__':
     exchange = Exchange.bitfinex
     sym = Assets.ethusd
     start = datetime.datetime(2022, 2, 7)
-    end = datetime.datetime(2022, 3, 2)
+    end = datetime.datetime(2022, 3, 13)
 
     inst = EstimateSide(
-        load_xy=LoadXY(exchange=exchange, sym=sym, start=start, end=end, labels=None, signals=None, features=None)
+        sym=sym,
+        load_xy=LoadXY(exchange=exchange, sym=sym, start=start, end=end, labels=None, signals=None, features=None,
+                       label_ewm_span='32min')
     )
+    features = ['_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-min', '_measurement-trade_bars|_field-sequence_direction|asset-adausd|exchange-bitfinex|information-sequence|unit-tick|unit_size-30|aggWindow-2048|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-min', '_measurement-order_book|_field-size_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-mean', '_measurement-order_book|_field-count_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-max', '_measurement-trade_bars|_field-imbalance_size|asset-ethusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-75000|aggWindow-2048|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-max', '_measurement-order_book|_field-count_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-min', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-max', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-max', '_measurement-trade_bars|_field-imbalance_size|asset-solusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-4000|aggWindow-2048|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-adausd|exchange-bitfinex|information-imbalance|unit-adausd|unit_size-1000|aggWindow-1024|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-mean', '_measurement-trade_bars|_field-sequence_direction|asset-btcusd|exchange-bitfinex|information-sequence|unit-usd|unit_size-300000|aggWindow-2048|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-btcusd|exchange-bitfinex|information-sequence|unit-btcusd|unit_size-5|aggWindow-2048|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-btcusd|exchange-bitfinex|information-imbalance|unit-btcusd|unit_size-5|aggWindow-2048|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-btcusd|exchange-bitfinex|information-imbalance|unit-btcusd|unit_size-5|aggWindow-1024|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-adausd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-1500|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-max', '_measurement-order_book|_field-size_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-max', '_measurement-order_book|_field-count_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-max', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-mean', '_measurement-trade_bars|_field-imbalance_size|asset-solusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-4000|aggWindow-1024|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-min', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-16|aggAggregator-max', '_measurement-order_book|_field-count_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-min', '_measurement-trade_bars|_field-imbalance_size|asset-ethusd|exchange-bitfinex|information-imbalance|unit-tick|unit_size-30|aggWindow-1024|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-min', '_measurement-trade_bars|_field-imbalance_size|asset-adausd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-1500|aggWindow-2048|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-adausd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-1500|aggWindow-1024|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-solusd|exchange-bitfinex|information-sequence|unit-tick|unit_size-10|aggWindow-1024|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-min', '_measurement-order_book|_field-count_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-min', '_measurement-trade_bars|_field-sequence_direction|asset-solusd|exchange-bitfinex|information-sequence|unit-solusd|unit_size-30|aggWindow-1024|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-max', '_measurement-trade_bars|_field-imbalance_size|asset-xrpusd|exchange-bitfinex|information-imbalance|unit-tick|unit_size-15|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-mean', '_measurement-trade_bars|_field-imbalance_size|asset-btcusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-150000|aggWindow-2048|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-mean', '_measurement-trade_bars|_field-imbalance_size|asset-adausd|exchange-bitfinex|information-imbalance|unit-adausd|unit_size-1000|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-min', '_measurement-trade_bars|_field-imbalance_size|asset-solusd|exchange-bitfinex|information-imbalance|unit-solusd|unit_size-40|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-max', '_measurement-trade_bars|_field-imbalance_size|asset-adausd|exchange-bitfinex|information-imbalance|unit-adausd|unit_size-1000|aggWindow-256|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-solusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-4000|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-min', '_measurement-trade_bars|_field-sequence_direction|asset-adausd|exchange-bitfinex|information-sequence|unit-usd|unit_size-1000|aggWindow-2048|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-ethusd|exchange-bitfinex|information-imbalance|unit-tick|unit_size-30|aggWindow-2048|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-xrpusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-7000|aggWindow-2048|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-xrpusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-7000|aggWindow-1024|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-xrpusd|exchange-bitfinex|information-imbalance|unit-tick|unit_size-15|aggWindow-1024|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-adausd|exchange-bitfinex|information-sequence|unit-tick|unit_size-30|aggWindow-1024|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-btcusd|exchange-bitfinex|information-imbalance|unit-btcusd|unit_size-5|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-max', '_measurement-trade_bars|_field-sequence_direction|asset-solusd|exchange-bitfinex|information-sequence|unit-tick|unit_size-10|aggWindow-2048|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-btcusd|exchange-bitfinex|information-imbalance|unit-btcusd|unit_size-5|aggWindow-256|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-xrpusd|exchange-bitfinex|information-imbalance|unit-xrpusd|unit_size-10000|aggWindow-2048|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-xrpusd|exchange-bitfinex|information-sequence|unit-tick|unit_size-10|aggWindow-2048|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-mean', '_measurement-trade_bars|_field-imbalance_size|asset-adausd|exchange-bitfinex|information-imbalance|unit-adausd|unit_size-1000|aggWindow-2048|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-xrpusd|exchange-bitfinex|information-imbalance|unit-xrpusd|unit_size-10000|aggWindow-256|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-min', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-min', '_measurement-order_book|_field-count_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-mean', '_measurement-trade_bars|_field-imbalance_size|asset-xrpusd|exchange-bitfinex|information-imbalance|unit-tick|unit_size-15|aggWindow-2048|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-mean', '_measurement-trade_bars|_field-sequence_direction|asset-solusd|exchange-bitfinex|information-sequence|unit-tick|unit_size-10|aggWindow-512|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-xrpusd|exchange-bitfinex|information-imbalance|unit-xrpusd|unit_size-10000|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-max', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-min', '_measurement-order_book|_field-count_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-mean', '_measurement-trade_bars|_field-sequence_direction|asset-solusd|exchange-bitfinex|information-sequence|unit-usd|unit_size-3000|aggWindow-1024|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-max', '_measurement-trade_bars|_field-imbalance_size|asset-xrpusd|exchange-bitfinex|information-imbalance|unit-xrpusd|unit_size-10000|aggWindow-1024|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-min', '_measurement-trade_bars|_field-imbalance_size|asset-solusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-4000|aggWindow-256|aggAggregator-sum', '_measurement-order_book|_field-size_ratio|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_ratio|unit-size_ewm_sum|aggWindow-2048|aggAggregator-max', '_measurement-order_book|_field-size_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-max', '_measurement-trade_bars|_field-sequence_direction|asset-adausd|exchange-bitfinex|information-sequence|unit-tick|unit_size-30|aggWindow-256|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-btcusd|exchange-bitfinex|information-sequence|unit-btcusd|unit_size-5|aggWindow-1024|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-solusd|exchange-bitfinex|information-imbalance|unit-solusd|unit_size-40|aggWindow-1024|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-solusd|exchange-bitfinex|information-imbalance|unit-solusd|unit_size-40|aggWindow-2048|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-xrpusd|exchange-bitfinex|information-sequence|unit-usd|unit_size-3000|aggWindow-1024|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-btcusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-150000|aggWindow-1024|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-128|aggAggregator-min', '_measurement-order_book|_field-size_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-mean', '_measurement-trade_bars|_field-sequence_direction|asset-ethusd|exchange-bitfinex|information-sequence|unit-tick|unit_size-100|aggWindow-2048|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-max', '_measurement-trade_bars|_field-sequence_direction|asset-xrpusd|exchange-bitfinex|information-sequence|unit-usd|unit_size-3000|aggWindow-2048|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-min', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-mean', '_measurement-order_book|_field-count_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-mean', '_measurement-order_book|_field-size_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-min', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-mean', '_measurement-order_book|_field-size_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-min', '_measurement-trade_bars|_field-sequence_direction|asset-adausd|exchange-bitfinex|information-sequence|unit-tick|unit_size-30|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-max', '_measurement-trade_bars|_field-sequence_direction|asset-btcusd|exchange-bitfinex|information-sequence|unit-usd|unit_size-300000|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-mean', '_measurement-trade_bars|_field-sequence_direction|asset-btcusd|exchange-bitfinex|information-sequence|unit-usd|unit_size-300000|aggWindow-256|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-4|aggAggregator-min', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-128|aggAggregator-max', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-max', '_measurement-trade_bars|_field-imbalance_size|asset-adausd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-1500|aggWindow-256|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-xrpusd|exchange-bitfinex|information-sequence|unit-usd|unit_size-3000|aggWindow-256|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-max', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-mean', '_measurement-trade_bars|_field-imbalance_size|asset-xrpusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-7000|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-min', '_measurement-trade_bars|_field-sequence_direction|asset-xrpusd|exchange-bitfinex|information-sequence|unit-usd|unit_size-3000|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-max', '_measurement-trade_bars|_field-sequence_direction|asset-adausd|exchange-bitfinex|information-sequence|unit-usd|unit_size-1000|aggWindow-1024|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-max', '_measurement-trade_bars|_field-sequence_direction|asset-solusd|exchange-bitfinex|information-sequence|unit-usd|unit_size-3000|aggWindow-2048|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-mean', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-min', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-64|aggAggregator-min', '_measurement-order_book|_field-size_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-8|aggAggregator-min', '_measurement-trade_bars|_field-imbalance_size|asset-ethusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-75000|aggWindow-1024|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-xrpusd|exchange-bitfinex|information-sequence|unit-tick|unit_size-10|aggWindow-512|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-btcusd|exchange-bitfinex|information-sequence|unit-btcusd|unit_size-5|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-mean', '_measurement-order_book|_field-size_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-min', '_measurement-order_book|_field-size_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-mean', '_measurement-order_book|_field-size_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-128|aggAggregator-min', '_measurement-order_book|_field-size_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-min', '_measurement-trade_bars|_field-sequence_direction|asset-btcusd|exchange-bitfinex|information-sequence|unit-usd|unit_size-300000|aggWindow-1024|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-32|aggAggregator-max', '_measurement-order_book|_field-size_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-mean', '_measurement-order_book|_field-size_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-max', '_measurement-order_book|_field-size_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-2048|aggAggregator-min', '_measurement-trade_bars|_field-sequence_direction|asset-solusd|exchange-bitfinex|information-sequence|unit-solusd|unit_size-30|aggWindow-2048|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-xrpusd|exchange-bitfinex|information-sequence|unit-tick|unit_size-10|aggWindow-1024|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-128|aggAggregator-mean', '_measurement-trade_bars|_field-sequence_direction|asset-xrpusd|exchange-bitfinex|information-sequence|unit-tick|unit_size-10|aggWindow-128|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-xrpusd|exchange-bitfinex|information-sequence|unit-tick|unit_size-10|aggWindow-256|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-mean', '_measurement-trade_bars|_field-sequence_direction|asset-adausd|exchange-bitfinex|information-sequence|unit-usd|unit_size-1000|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-32|aggAggregator-max', '_measurement-order_book|_field-size_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-min', '_measurement-order_book|_field-size_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-16|aggAggregator-min', '_measurement-order_book|_field-count_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-128|aggAggregator-max', '_measurement-order_book|_field-size_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-max', '_measurement-order_book|_field-size_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-max', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-32|aggAggregator-max', '_measurement-order_book|_field-size_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-128|aggAggregator-max', '_measurement-trade_bars|_field-imbalance_size|asset-ethusd|exchange-bitfinex|information-imbalance|unit-tick|unit_size-30|aggWindow-256|aggAggregator-sum', '_measurement-trade_bars|_field-imbalance_size|asset-solusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-4000|aggWindow-128|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-solusd|exchange-bitfinex|information-sequence|unit-usd|unit_size-3000|aggWindow-256|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-xrpusd|exchange-bitfinex|information-sequence|unit-usd|unit_size-3000|aggWindow-128|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-mean', '_measurement-trade_bars|_field-imbalance_size|asset-xrpusd|exchange-bitfinex|information-imbalance|unit-tick|unit_size-15|aggWindow-128|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-solusd|exchange-bitfinex|information-sequence|unit-tick|unit_size-10|aggWindow-128|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-64|aggAggregator-mean', '_measurement-order_book|_field-count_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-128|aggAggregator-min', '_measurement-order_book|_field-size_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-8|aggAggregator-max', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-64|aggAggregator-mean', '_measurement-trade_bars|_field-sequence_direction|asset-solusd|exchange-bitfinex|information-sequence|unit-solusd|unit_size-30|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-mean', '_measurement-order_book|_field-count_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-mean', '_measurement-trade_bars|_field-imbalance_size|asset-ethusd|exchange-bitfinex|information-imbalance|unit-tick|unit_size-30|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-8|aggAggregator-max', '_measurement-order_book|_field-size_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-min', '_measurement-trade_bars|_field-sequence_direction|asset-adausd|exchange-bitfinex|information-sequence|unit-tick|unit_size-30|aggWindow-128|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-solusd|exchange-bitfinex|information-sequence|unit-tick|unit_size-10|aggWindow-256|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-max', '_measurement-order_book|_field-count_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-128|aggAggregator-max', '_measurement-trade_bars|_field-sequence_direction|asset-btcusd|exchange-bitfinex|information-sequence|unit-btcusd|unit_size-5|aggWindow-256|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-32|aggAggregator-max', '_measurement-trade_bars|_field-imbalance_size|asset-ethusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-75000|aggWindow-512|aggAggregator-sum', '_measurement-order_book|_field-count_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-64|aggAggregator-max', '_measurement-trade_bars|_field-imbalance_size|asset-xrpusd|exchange-bitfinex|information-imbalance|unit-usd|unit_size-7000|aggWindow-256|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-max', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-512|aggAggregator-max', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-min', '_measurement-order_book|_field-size_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-128|aggAggregator-mean', '_measurement-order_book|_field-count_net|asset-solusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-mean', '_measurement-order_book|_field-count_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-mean', '_measurement-trade_bars|_field-imbalance_size|asset-btcusd|exchange-bitfinex|information-imbalance|unit-btcusd|unit_size-5|aggWindow-128|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-1024|aggAggregator-min', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-64|aggAggregator-min', '_measurement-order_book|_field-size_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-128|aggAggregator-max', '_measurement-order_book|_field-count_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-8|aggAggregator-min', '_measurement-trade_bars|_field-sequence_direction|asset-btcusd|exchange-bitfinex|information-sequence|unit-usd|unit_size-300000|aggWindow-128|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-solusd|exchange-bitfinex|information-sequence|unit-solusd|unit_size-30|aggWindow-128|aggAggregator-sum', '_measurement-trade_bars|_field-sequence_direction|asset-adausd|exchange-bitfinex|information-sequence|unit-usd|unit_size-1000|aggWindow-256|aggAggregator-sum', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-128|aggAggregator-mean', '_measurement-order_book|_field-count_net|asset-ethusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_count_imbalance_net|unit-size_ewm_sum|aggWindow-128|aggAggregator-mean', '_measurement-order_book|_field-size_net|asset-adausd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-32|aggAggregator-max', '_measurement-order_book|_field-size_net|asset-btcusd|delta_size_ratio-0.5|exchange-bitfinex|information-bid_buy_size_imbalance_net|unit-size_ewm_sum|aggWindow-256|aggAggregator-min']
+    inst.load_inputs(features=features)
     # inst.best_k_elbow(100)
     # inst.best_k_silhouette(50, 50)
     # k ==50 is okay. rather have more than fewer. only useful if actually disperse. means some k have
     # much larger count than others... need dispersity measure for each k like median cnt?
     inst.train()
     inst.save()
+    # inst.to_influx()
     logger.info(f'Done. Ex: {inst.ex}')

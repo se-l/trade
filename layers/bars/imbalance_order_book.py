@@ -1,5 +1,3 @@
-from typing import List
-
 import yaml
 import numpy as np
 import datetime
@@ -7,12 +5,11 @@ import pandas as pd
 
 from functools import lru_cache
 from itertools import product
-
-from numba import jit
+from typing import List
 
 from common.paths import Paths
-from connector.influxdb.influxdb_wrapper import influx
 from common.modules.logger import logger
+from connector.npy.client import npy_client
 
 
 def apply_best_bid_ask(price: np.ndarray, side: np.ndarray, size: np.ndarray):
@@ -160,7 +157,8 @@ class OrderBook:
     @property
     @lru_cache()
     def level(self) -> int:
-        return min(int((self.df_quotes['price'] * self.level_from_price_pct / 100).max() / self.level_distance), 300)
+        return 30
+        # return min(int((self.df_quotes['price'] * self.level_from_price_pct / 100).max() / self.level_distance), 300)
 
     def derive_events(self):
         df = self.df_quotes
@@ -227,9 +225,8 @@ if __name__ == '__main__':
         settings = yaml.safe_load(stream)
     for exchange in settings.keys():
         for asset, params in settings[exchange].items():
-            if asset not in ['solusd']:  # continue from march 8
-            # if asset not in ['xrpusd']:
-                continue
+            # if asset not in ['ethusd']:
+            #     continue
 
             logger.info(f'Loading order book for {exchange} - {asset}')
             params = params.get('order book', {})
@@ -252,6 +249,8 @@ if __name__ == '__main__':
 
                 arr = (arr * weights).sum(axis=2)
                 size, count = arr[:, :, 0], arr[:, :, 1]
+                count = np.where(count == 0, count[count > 0].min(), count)  # avoid divide by 0 error
+                size = np.where(size == 0, size[size > 0].min(), size)  # avoid divide by 0 error
 
                 count_ratio = (count[:, 0] / np.abs(count[:, 1]))
                 size_ratio = (size[:, 0] / np.abs(size[:, 1]))  # bid|buy / ask|sell
@@ -263,25 +262,21 @@ if __name__ == '__main__':
                 ix_events, actual_deltas = ix_every_delta(ps_size_ratio.values, delta=delta_size_ratio)
                 ts_events = ix_ts[ix_events].unique()
                 logger.info(f'Ingesting Size, Count Ratios and Net for {len(ix_events)} unique: {len(ts_events)}')
-
                 for information, ps in {
                     'bid_buy_size_imbalance_ratio': ps_size_ratio,
                     'bid_buy_count_imbalance_ratio': ps_count_ratio,
                     'bid_buy_size_imbalance_net': ps_size_net,
                     'bid_buy_count_imbalance_net': ps_count_net,
                 }.items():
-                    influx.write(
-                        record=ps.loc[ts_events].groupby(level=0).last(),
-                        data_frame_measurement_name='order book',
-                        data_frame_tag_columns={**{
+                    npy_client.upsert(
+                        data=ps.loc[ts_events].groupby(level=0).last(),
+                        meta={
+                            'measurement_name': 'order book',
                             'exchange': exchange,
                             'asset': asset,
                             'information': information,
                             'unit': 'size_ewm_sum',
-                            'levels': level,
-                            'alpha': alpha,
                             'delta_size_ratio': delta_size_ratio
-                        }},
+                        }
                     )
     logger.info('Done')
-

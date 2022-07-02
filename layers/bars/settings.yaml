@@ -73,7 +73,7 @@ bitfinex:
       usd: 1_500
     trade sequence:
       adausd: 50
-      tick: 30
+      tick: 10
       usd: 1_000
   xrpusd:
     price:
@@ -90,6 +90,6 @@ bitfinex:
       tick: 15
       usd: 7_000
     trade sequence:
-      xrpusd: 100
-      tick: 10
+      xrpusd: 1000
+      tick: 50
       usd: 3_000

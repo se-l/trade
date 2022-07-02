@@ -96,8 +96,15 @@ if __name__ == '__main__':
                 )
                 df = bar.resample()
                 df = df['sequence_direction'].groupby(level=0).sum()
-                bar.to_influx(df[df != 0])
+                bar.to_npy(df[df != 0])
                 if df.shape[0] / (bar.end - bar.start).days < 500:
                     logger.warning(f'Decrease threshold for {asset.upper()} - {unit} - {unit_size}')
                 logger.info(f'Resampled df of shape: {df.shape}. Points per day: {df.shape[0] / (bar.end - bar.start).days}')
     logger.info('Done')
+    # redo ADAUSD - adausd - 50
+    # Injected (124353, 6) dataframe records
+    # 2022-03-20 19:33:11,958 - INFO Resampled df of shape: (124374,). Points per day: 3658.0588235294117
+
+    # equence - XRPUSD - xrpusd - 100
+    # Injected (376693, 6) dataframe records
+    # 2022-03-20 20:17:03,331 - INFO Resampled df of shape: (376741,). Points per day: 11080.617647058823

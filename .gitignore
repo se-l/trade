@@ -17,3 +17,4 @@
 /connector/mysql/**
 /trader/train/**
 /trader/plot/**
+/jpy/.ipynb_checkpoints/

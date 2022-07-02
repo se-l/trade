@@ -14,6 +14,12 @@ class IEstimate:
     # What consumbers need to find
     df = None
     ps_label = None
+    ex = None
+    boosters = None
+    pred_label_val = None
+    pred_label_ho = None
+    ps_label = None
+    ps_label_ho = None
 
     # def __init__(self, exchange: Exchange, sym, start: datetime, end: datetime, labels=None, signals=None, features=None):
     #     self.exchange = exchange

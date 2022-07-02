@@ -68,6 +68,6 @@ if __name__ == '__main__':
                         if df.shape[0] / (bar.end - bar.start).days < 500:
                             logger.warning(f'Decrease threshold for {asset.upper()} - {unit} - {unit_size}')
                         logger.info(f'Resampled df of shape: {df.shape}. Points per day: {df.shape[0] / (bar.end - bar.start).days}')
-                    bar.to_influx(df)
+                    bar.to_npy(df)
     logger.info('Done')
 

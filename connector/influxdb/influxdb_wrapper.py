@@ -1,9 +1,12 @@
+import os
+import pickle
 import re
 import datetime
 import pandas as pd
 import influxdb_client
 from influxdb_client.client.write_api import SYNCHRONOUS, ASYNCHRONOUS
 # You can generate an API token from the "API Tokens Tab" in the UI
+from common.paths import Paths
 from common.utils.window_aggregator import WindowAggregator
 
 token = "2KWQnyVoTekdn08KdnUcACrzyFOZ0ag4wBjGUe4YJ1_q21SBbGbyzl6wo8_IFD5XCyVVbqAgZl9KjpBMagKZ9Q=="
@@ -104,6 +107,48 @@ class Influx:
     def delete(self, predicate, start: datetime = datetime.datetime(1970, 1, 1), stop=datetime.datetime(2099, 12, 31)):
         self.api_delete.delete(start=start, stop=stop, predicate=predicate, bucket=bucket, org=org)
 
+    def redo_measurement(self, _measurement: str, remove_tags=[]):
+        """
+        Query whole measurement
+        Pickle
+        Drop measurement
+        Re-Insert with fewer tags
+        Delete pickle
+        :param _measurement:
+        :return:
+        """
+        import pickle
+        result = self.api_query.query(org=org, query=f'''from(bucket:"trading")
+                                                         |> filter(fn:(r) => r._measurement == "{_measurement}")
+                                                         ''')
+        with open(r'C:\repos\trade\data\results.p', 'wb') as f:
+            pickle.dump(result, f)
+        dfs = []
+        field_cols = []
+        for table in result:
+            records = []
+            field = table.records[0].get_field()
+            field_cols.append(field)
+            tags = {k: v for k, v in table.records[0].values.items() if not k.startswith('_') and k not in ['result', 'table'] + remove_tags}
+            for record in table.records:
+                records.append({'timestamp': record.get_time(), field: record.get_field(), 'value': record.get_value()})
+            dfs.append(pd.DataFrame(records).set_index('timestamp', drop=True))
+        field_cols = list(set(field_cols))
+
+        self.api_query.query(org=org, query=f'''from(bucket:"trading") |> DROP MEASUREMENT "{_measurement}"''')
+        self.client.query_api().query(query=f'''DROP MEASUREMENT  "order book" ''', org=org)
+        self.client.api_query.query(org=org, query=f'''DROP MEASUREMENT "order book"''')
+
+        # Reinsert
+        for df in dfs:
+            influx.write(
+                record=df,
+                data_frame_measurement_name=_measurement,
+                data_frame_tag_columns=[c for c in df.columns if c not in field_cols],
+            )
+        os.remove(r'C:\repos\trade\data\results.p')
+        print('Done')
+
     def close(self):
         self.client.close()
 
@@ -111,8 +156,16 @@ class Influx:
 influx = Influx()
 
 if __name__ == '__main__':
-    # pass
-    influx.delete(predicate='''_measurement="trade bars" and information="sequence" ''')
+    # import pytz
+    # with open(os.path.join(Paths.data, 'df_loadxy.p'), 'rb') as f:
+    #     df = pickle.load(f)
+    # df = df[[c for c in df.columns if 'ethusd' in c and 'order book' in c]]
+    # df.index[(df.index > datetime.datetime(2022, 3, 2, 0, 0, 0, tzinfo=pytz.UTC)) & (df.index < datetime.datetime(2022, 3, 3, 0, 0, 0, tzinfo=pytz.UTC))]
+    # set([d.hour for d in df.index[(df.index > datetime.datetime(2022, 3, 2, 0, 0, 0, tzinfo=pytz.UTC)) & (df.index < datetime.datetime(2022, 3, 3, 0, 0, 0, tzinfo=pytz.UTC))]])
+    # assert len(set([d.hour for d in df.index[(df.index > datetime.datetime(2022, 3, 2, 0, 0, 0, tzinfo=pytz.UTC)) & (df.index < datetime.datetime(2022, 3, 3, 0, 0, 0, tzinfo=pytz.UTC))]])) == 24
+
+
+    influx.delete(predicate='''_measurement="order book" ''')
     # influx.delete(predicate='''_measurement="trade bars" and information="imbalance" and unit="ethusd" and unit_size=100 ''')
     # influx.delete(predicate='''_measurement="label" ''')
     # influx.query(query='''
@@ -124,4 +177,5 @@ if __name__ == '__main__':
     #                                     )
     #                 ''')
     #
+
     print('Done')

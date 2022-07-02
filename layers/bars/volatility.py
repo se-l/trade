@@ -53,6 +53,6 @@ if __name__ == '__main__':
     logger.info(f'Resampled df of shape: {df.shape}')
     print(df.head())
     print(df.tail())
-    bar.to_influx(df)
+    bar.to_npy(df)
     logger.info('Done')
 

@@ -36,8 +36,9 @@ class SampleWeights:
         return of 1 -> weight of 1.
         """
         arr = copy.deepcopy(self.ps_label).values
-        arr = np.abs((arr - 1))
-        return arr / max(arr)
+        arr = np.abs((arr - arr.mean()) / arr.std())
+        arr = arr / arr.max()
+        return arr
 
     @check_weights
     def cluster_sample_weight(self, n_clusters: int):

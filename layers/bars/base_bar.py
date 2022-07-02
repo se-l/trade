@@ -1,9 +1,9 @@
 import pandas as pd
 
 from common.modules.logger import logger
-from connector.influxdb.influxdb_wrapper import influx
 from abc import abstractmethod
 from common.modules.enums import Exchange, Assets
+from connector.npy.client import npy_client
 
 
 class BaseBar:
@@ -29,17 +29,17 @@ class BaseBar:
     @abstractmethod
     def add_measurable(self, df): pass
 
-    def to_influx(self, df):
+    def to_npy(self, df):
         if not self.information:
             raise ValueError('No information tag set.')
         assert len(df.index.unique()) == len(df), 'Timestamp is not unique. Group By time first before uploading to influx.'
-        influx.write(
-            record=df,
-            data_frame_measurement_name='trade bars',
-            data_frame_tag_columns={**{
+        npy_client.upsert(
+            meta={
+                'measurement_name': 'trade bars',
                 'exchange': self.exchange,
                 'asset': self.sym,
                 'information': self.information,
                 'unit': self.unit,
-            }, **self.tags},
+            },
+            data=df,
         )
