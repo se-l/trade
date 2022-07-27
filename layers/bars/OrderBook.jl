@@ -13,7 +13,6 @@ function bfill(v)
     vr = reverse(v)
     return reverse(vr[accumulate(max, [i*!(ismissing(vr[i]) | isnan(vr[i])) for i in 1:length(vr)], init=1)])
 end
-# bfill(v::Series) = return Series(bfill(v)))
 
 
 mutable struct Book
@@ -41,7 +40,9 @@ function create_order_book!(order_book)
     # need information to accurately encode when levels where emptied and filled
     
     vec_count::Vector{Bool} = df.count .== 0
+    # vec_count = df.count .== 0
     arg2::Vector = ifelse.(vec_count .== true, 0, df.side)
+    # arg2 = ifelse.(vec_count .== true, 0, df.side)
     a, b = apply_best_bid_ask(df.price, arg2, df.size)
     df = hcat(df, DataFrame(best_bid=a))
     df = hcat(df, DataFrame(best_ask=b))
@@ -55,8 +56,8 @@ function create_order_book!(order_book)
     df.best_ask = bfill(df.best_ask)
     df.best_bid = bfill(df.best_bid)
     
-    filter!(r -> !ismissing(r.price), df)
-    filter!(r -> !ismissing(r.size), df)
+    filter!(r -> !isna(r.price), df)
+    filter!(r -> !isna(r.size), df)
 
     df = impute_missing_count!(df)
 

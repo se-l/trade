@@ -1,3 +1,5 @@
+import time
+
 import yaml
 import numpy as np
 import datetime
@@ -160,35 +162,38 @@ class OrderBook:
         return 30
         # return min(int((self.df_quotes['price'] * self.level_from_price_pct / 100).max() / self.level_distance), 300)
 
-    def derive_events(self):
-        df = self.df_quotes
-        df = df.loc[(slice(None), slice(None), list(range(self.level))), :]
-        df = df.groupby(['timestamp', 'side', 'level']).last()
-        # cumulative race through all rows. final state must include every single level
-        ix_ts = df.index.get_level_values('timestamp').unique()
-        book = pd.DataFrame(None, index=pd.MultiIndex.from_product([
-                                ix_ts,
-                                [1, -1],  # side
-                                range(self.level)
-                            ], names=["timestamp", "side", 'level']),
-                            columns=['size', 'count'], dtype=float)
-        # book2 = np.empty(shape=(len(df.index.get_level_values('timestamp').unique()), 2, self.level, 2))
-        logger.info('Inserting values into empty book frame')
-        book.loc[df.index] = df[['size', 'count']]
-        df = None
-        arr = book.values.reshape(len(ix_ts), 2, self.level, 2)
-        book = None
-        ix_valid = 0
-        logger.info('FFill each level')
-        for side, level in product([0, 1], range(self.level)):
-            # print(f'Side: {side} - Level: {level}')
-            arr[:, side, level, 0] = ffill(arr[:, side, level, 0])
-            ix_valid = max(np.argmin(np.isnan(arr[:, side, level, 0])), ix_valid)
-            arr[:, side, level, 1] = ffill(arr[:, side, level, 1])
-            ix_valid = max(np.argmin(np.isnan(arr[:, side, level, 1])), ix_valid)
-        arr, ts = arr[ix_valid:], ix_ts[ix_valid:]
-        arr = np.nan_to_num(arr)
-        return arr, ts
+
+def derive_events(df_quotes, level):
+    df = df_quotes
+    df = df.loc[(slice(None), slice(None), list(range(1, level + 1))), :]
+    df = df.groupby(['timestamp', 'side', 'level']).last()
+    # cumulative race through all rows. final state must include every single level
+    ix_ts = df.index.get_level_values('timestamp').unique()
+    book = pd.DataFrame(None, index=pd.MultiIndex.from_product([
+                            ix_ts,
+                            [1, -1],  # side
+                            list(range(1, level + 1))
+                        ], names=["timestamp", "side", 'level']),
+                        columns=['size', 'count'], dtype=float)
+    # book2 = np.empty(shape=(len(df.index.get_level_values('timestamp').unique()), 2, level, 2))
+    logger.info('Inserting values into empty book frame')
+    book.loc[df.index] = df[['size', 'count']]
+    df = None
+    arr = book.values.reshape(len(ix_ts), 2, level, 2)
+    # np.nan_to_num(arr, 0)[:, :, :, 0].sum() # size
+    # np.nan_to_num(arr, 0)[:, :, :, 1].sum() # count
+    book = None
+    ix_valid = 0
+    logger.info('FFill each level')
+    for side, level in product([0, 1], range(level)):
+        print(f'Side: {side} - Level: {level}')
+        arr[:, side, level, 0] = ffill(arr[:, side, level, 0])
+        ix_valid = max(np.argmin(np.isnan(arr[:, side, level, 0])), ix_valid)
+        arr[:, side, level, 1] = ffill(arr[:, side, level, 1])
+        ix_valid = max(np.argmin(np.isnan(arr[:, side, level, 1])), ix_valid)
+    arr, ts = arr[ix_valid:], ix_ts[ix_valid:]
+    arr = np.nan_to_num(arr)
+    return arr, ts
 
 
 def ffill(arr: np.ndarray) -> np.ndarray:
@@ -221,19 +226,20 @@ def invert_lt_zero_ratio(ps: pd.Series) -> pd.Series:
 
 
 if __name__ == '__main__':
+    import time
+    t0 = time.time()
     with open(Paths.layer_settings, "r") as stream:
         settings = yaml.safe_load(stream)
     for exchange in settings.keys():
         for asset, params in settings[exchange].items():
-            # if asset not in ['ethusd']:
-            #     continue
-
+            if asset not in ['ethusd']:
+                continue
             logger.info(f'Loading order book for {exchange} - {asset}')
             params = params.get('order book', {})
             delta_size_ratio = params.get('delta_size_ratio')
             from layers.bitfinex_reader import BitfinexReader
-            start = datetime.datetime(2022, 2, 7)
-            end = datetime.datetime(2022, 3, 13)
+            start = datetime.datetime(2022, 2, 8)
+            end = datetime.datetime(2022, 2, 9  )
             for i in range(1 + (end-start).days):
                 dt = start + datetime.timedelta(days=i)
                 logger.info(f'Running {dt}')
@@ -242,7 +248,7 @@ if __name__ == '__main__':
                 level = ob.level
                 logger.info(f'{asset} - Summarizing {level} order book levels')
                 ob.create_order_book()
-                arr, ix_ts = ob.derive_events()
+                arr, ix_ts = derive_events(ob.df_quotes, ob.level)
 
                 alpha = 2/(level + 1)
                 weights = np.array([(1-alpha)**i for i in range(level)]).reshape(1, 1, level, 1)
@@ -250,16 +256,19 @@ if __name__ == '__main__':
                 arr = (arr * weights).sum(axis=2)
                 size, count = arr[:, :, 0], arr[:, :, 1]
                 count = np.where(count == 0, count[count > 0].min(), count)  # avoid divide by 0 error
-                size = np.where(size == 0, size[size > 0].min(), size)  # avoid divide by 0 error
+                min_size = size[size > 0].min()
+                size = np.where(size == 0, min_size, size)  # avoid divide by 0 error
 
-                count_ratio = (count[:, 0] / np.abs(count[:, 1]))
-                size_ratio = (size[:, 0] / np.abs(size[:, 1]))  # bid|buy / ask|sell
+                count_ratio = count[:, 0] / count[:, 1]
+                size_ratio = np.abs(size[:, 1]) / size[:, 0]  # bid|buy / ask|sell
                 ps_count_ratio = invert_lt_zero_ratio(pd.Series(count_ratio, index=ix_ts, name='count_ratio'))
                 ps_size_ratio = invert_lt_zero_ratio(pd.Series(size_ratio, index=ix_ts, name='size_ratio'))
-                ps_size_net = pd.Series(size[:, 0] + size[:, 1], index=ix_ts, name='size_net')
-                ps_count_net = pd.Series(count[:, 0] - count[:, 1], index=ix_ts, name='count_net')  # bid - ask
+                ps_size_net = pd.Series(size[:, 1] + size[:, 0], index=ix_ts, name='size_net')
+                ps_count_net = pd.Series(count[:, 1] - count[:, 0], index=ix_ts, name='count_net')  # bid - ask
 
+                t1 = time.time()
                 ix_events, actual_deltas = ix_every_delta(ps_size_ratio.values, delta=delta_size_ratio)
+                logger.info(f'ix_every_delta in {time.time() - t1}')
                 ts_events = ix_ts[ix_events].unique()
                 logger.info(f'Ingesting Size, Count Ratios and Net for {len(ix_events)} unique: {len(ts_events)}')
                 for information, ps in {
@@ -268,8 +277,10 @@ if __name__ == '__main__':
                     'bid_buy_size_imbalance_net': ps_size_net,
                     'bid_buy_count_imbalance_net': ps_count_net,
                 }.items():
+                    vec = ps.loc[ts_events].groupby(level=0).last()
+                    logger.info(f'{information} - {len(vec)} - {vec.sum()}')
                     npy_client.upsert(
-                        data=ps.loc[ts_events].groupby(level=0).last(),
+                        data=vec,
                         meta={
                             'measurement_name': 'order book',
                             'exchange': exchange,
@@ -280,3 +291,4 @@ if __name__ == '__main__':
                         }
                     )
     logger.info('Done')
+    logger.info(f'Time needed {time.time() - t0}')

@@ -1,4 +1,5 @@
 **/__pycache__/
+**/.vscode/
 /sandbox/
 /subprocess_buffer/
 !/subprocess_buffer/__init__.py

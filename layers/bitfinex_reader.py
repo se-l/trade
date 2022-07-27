@@ -41,8 +41,7 @@ class BitfinexReader:
                     df_lst.append(df)
             break
         # logger.info(f'Concatenating {len(df_lst)} dataframes ...')
-        df = pd.concat(df_lst).reset_index(drop=True)
-        return df
+        return pd.concat(df_lst).reset_index(drop=True) if df_lst else None
 
     @staticmethod
     def remove_merged_rows(df):
@@ -64,6 +63,8 @@ class BitfinexReader:
     @classmethod
     def load_quotes(cls, sym: str, start: datetime.datetime, end: datetime.datetime):
         df = cls.load(start, end, os.path.join(cls.dir_tick, sym.lower()), fn_key='quote')
+        if not df:
+            return None
         df.columns = cls.schema_quote
         # amount > 0: Bid < 0 Ask. count 0: deleted
         df['side'] = (df['size'] > 0).map({True: 1, False: -1})

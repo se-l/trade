@@ -1,8 +1,12 @@
-module ClientTsHdf5
+__precompile__()
 
+module ClientTsHdf5
+# To Improve: Upsert - Assume sorted. Therefore, just append if last ts < first of new data. 
 using JLD2
 using Nettle
 using JSON3
+using PyCall
+np = pyimport("numpy")
 
 path_hdf5 = "C://repos//trade//data//ts2hdf5"
 
@@ -14,20 +18,31 @@ end
 
 fname(meta) = return hexdigest("md5", JSON3.write(meta)) * ".jld2"
 path(meta) = return joinpath(path_hdf5, fname(meta))
+py"""
+import numpy as np
+def np_intersect1d(ar1, ar2, assume_unique=False, return_indices=False):
+    # return zero based indexed arrays. Apply .+ 1
+    return np.intersect1d(ar1, ar2, assume_unique=assume_unique, return_indices=return_indices)
+"""
 
-function query(meta, params)
+function query(meta, from=missing, to=missing)
     """Given meta, get object. Given params return right time slice"""
+    fpath = path(meta)
+    if !ispath(fpath)
+        return missing
+    else
+        jldopen(fpath, "r") do file
+            return file["data"]
+        end
+    end
 end
 
 function upsert(meta, data)
     fpath = path(meta)
     if ispath(fpath)
-        d0 = missing
-        jldopen(fpath, "r") do file
-            d0 = file["data"]
-        end
-        ixd0_not_in_1 = findall(!(in(data[:, 1])), d0[:, 1])
-        d1 = vcat(d0[ixd0_not_in_1, :], data)
+        d0 = load(fpath, "data")
+        _, ix1, ix2 = py"np_intersect1d"(d0[:, 1], data[:, 1], assume_unique=true, return_indices=true)
+        d1 = vcat(d0[setdiff(1:size(d0)[1], ix1 .+ 1), :], data)
         d1 = d1[sortperm(d1[:, 1]), :]
     else
         d1 = data
@@ -70,6 +85,16 @@ end
 # TEST
 # ClientTsHdf5.register(Dict("a"=>1))    
 # ClientTsHdf5.deregister(ClientTsHdf5.fname(Dict("a"=>1)))
-# ClientTsHdf5.upsert(Dict("a"=>1), [[1,2,3] [2,3,4]])
+# ClientTsHdf5.upsert(Dict("a"=>2), [[Date(2022, 1, i) for i in 7:9] [2,3,4]])
 # println(ClientTsHdf5.get(Dict("a"=>1)))
-# ClientTsHdf5.delete(Dict("a"=>1))
+# ClientTsHdf5.query(Dict("a"=>2))
+# ClientTsHdf5.delete(Dict("a"=>2))
+# @time println(ClientTsHdf5.fname(Dict("a"=>2)))
+r = ClientTsHdf5.query(Dict(
+    "measurement_name"=> "order book",
+    "delta_size_ratio"=> 0.5,
+    "exchange"=> "bitfinex",
+    "unit"=> "size_ewm_sum",
+    "information"=> "bid_buy_size_imbalance_net",
+    "asset"=> "ethusd"
+  ))
