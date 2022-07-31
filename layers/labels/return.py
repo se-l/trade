@@ -6,7 +6,7 @@ import re
 from common.modules.assets import Assets
 from common.modules.logger import logger
 from common.modules.enums import Exchange, Direction
-from connector.influxdb.influxdb_wrapper import influx
+from connector.ts2hdf5.client import upsert, query
 from layers.exchange_reader import ExchangeDataReader
 
 
@@ -44,7 +44,7 @@ class LabelReturn:
     Volatility measrued as moving ewa with span equal expiration period for now.
     """
 
-    def __init__(self, exchange: Exchange, sym , start, end, resampling_rule, expiration_window,
+    def __init__(self, exchange: Exchange, sym, start, end, resampling_rule, expiration_window,
                  min_long_return_sig_f,
                  max_long_stopout_sig_f,
                  min_short_return_sig_f,
@@ -73,7 +73,7 @@ class LabelReturn:
         df['label'] = None
         df.loc[:(len(df) - self.expiration_periods + 1), 'label'] = [label_point(a) for a in np.lib.stride_tricks.sliding_window_view(
             df[['price', 'barrier_long_up', 'barrier_long_down', 'barrier_short_down', 'barrier_short_up']].values, window_shape=(self.expiration_periods, 5))
-            .reshape(-1, self.expiration_periods, 5)]
+        .reshape(-1, self.expiration_periods, 5)]
         df = df[~df['label'].isna()]
         df = df[(df['label'] - df['label'].shift(1).fillna(0)) != 0]
         # print(df[['label', 'price']])
@@ -86,34 +86,34 @@ class LabelReturn:
         return expiration_window // freq_resampled
 
     def add_volatilty(self, df: pd.DataFrame):
-        df_vol = influx.query(query=f'''
-            from(bucket:"trading")
-            |> range(start: {self.start.isoformat()}Z, stop: {self.end.isoformat()}Z)
-            |> filter(fn:(r) => r._measurement == "trade bars" and  
-                                r.weighting == "ewm" and 
-                                r._field == "volatility" 
-                     )
-            ''',
-            name='volatility'
-            )
-        df = df.join(df_vol, on='timestamp', how='left')
+        res = query(meta={
+            'measurement_name': "trade bars",
+            'weighting': "ewm",
+            'information': "volatility"
+        },
+            start=self.start,
+            to=self.end
+        )
+        df_vol = pd.DataFrame(res)
+        df_vol.columns = ['ts', 'volatility']
+        df_vol = df_vol.set_index('ts')
+        df = df.join(df_vol, on='ts', how='left')
         df['volatility'] = df['volatility'].ffill()
         return df
 
-    def to_influx(self, df: pd.DataFrame):
-        influx.write(
-            record=df,
-            data_frame_measurement_name='label',
-            data_frame_tag_columns={
-                'exchange': exchange.name,
-                'asset': sym.name,
-                'resampling_rule': self.resampling_rule,
-                'expiration_window': self.expiration_window,
-                'min_long_return_vol_f': min_long_return_sig_f,
-                'max_long_stopout_sig_f': max_long_stopout_sig_f,
-                'min_short_return_vol_f': min_short_return_sig_f,
-                'max_short_stopout_sig_f': max_short_stopout_sig_f,
-            },
+    def to_disk(self, df: pd.DataFrame):
+        upsert(meta={
+            'measurement_name': 'label',
+            'exchange': self.exchange,
+            'asset': sym,
+            'resampling_rule': self.resampling_rule,
+            'expiration_window': self.expiration_window,
+            'min_long_return_vol_f': min_long_return_sig_f,
+            'max_long_stopout_sig_f': max_long_stopout_sig_f,
+            'min_short_return_vol_f': min_short_return_sig_f,
+            'max_short_stopout_sig_f': max_short_stopout_sig_f,
+        },
+            data=df
         )
 
 
@@ -129,7 +129,7 @@ if __name__ == '__main__':
         exchange=exchange,
         sym=sym,
         start=datetime.datetime(2022, 2, 9),
-        end=datetime.datetime(2022, 3, 2),
+        end=datetime.datetime(2022, 3, 13),
         resampling_rule='1min',
         expiration_window='60min',  # letter must match resampling letter
         min_long_return_sig_f=min_long_return_sig_f,
@@ -144,5 +144,5 @@ if __name__ == '__main__':
     # should reference the underlying volatilty curve somewhere and add as parameter
     assert len(df.index.unique()) == len(df), 'Timestamp is not unique. Group By time first before uploading to influx.'
     df['label'] = df['label'].astype(float)
-    bar.to_influx(df)
+    bar.to_disk(df)
     logger.info('Done')

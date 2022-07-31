@@ -5,7 +5,7 @@ from common.modules.data_store import DataStore
 from common.modules.direction import Direction
 from common.modules.features import Features
 from common.utils.util_func import total_profit2
-from connector.influxdb.influxdb_wrapper import InfluxClientWrapper as Influx
+from connector.influxdb.influxdb_wrapper import Influx
 from trader.data_loader.features2influx import insert_tick_n
 
 

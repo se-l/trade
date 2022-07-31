@@ -43,7 +43,7 @@ if __name__ == '__main__':
         exchange=Exchange.bitfinex,
         sym=Assets.ethusd,
         start=datetime.datetime(2022, 2, 7),
-        end=datetime.datetime(2022, 3, 2),
+        end=datetime.datetime(2022, 3, 13),
         unit=unit,
         resampling_rule='1D',
         span='30D',  # Must align by letter for now D

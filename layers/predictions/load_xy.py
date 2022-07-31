@@ -11,8 +11,8 @@ from functools import reduce
 from common.modules.assets import Assets
 from common.modules.exchange import Exchange
 from common.utils.window_aggregator import WindowAggregator
-from connector.influxdb.influxdb_wrapper import influx
 from common.paths import Paths
+from connector.ts2hdf5.client import query
 from layers.features.upsampler import Upsampler
 from layers.predictions.event_extractor import EventExtractor
 from common.utils.util_func import is_stationary
@@ -30,13 +30,13 @@ map_re_information2aggregator = {
 
 class LoadXY(ILoadXY):
     """Estimate side by:
-    - Loading label ranges from inlux
-    - Samples are events where series diverges from expectation: load from inlux
+    - Loading label ranges
+    - Samples are events where series diverges from expectation: load from disk client
     - Weights: Less unique sample -> lower weight
     - CV. Embargo area
     - Store in Experiment
     - Generate feature importance plot
-    - ToInflux: Signed estimates
+    - Store: Signed estimates
     """
 
     def __init__(self, exchange: Exchange, sym, start: datetime, end: datetime, labels=None, signals=None, features=None, label_ewm_span='32min', from_pickle=False):
@@ -48,7 +48,7 @@ class LoadXY(ILoadXY):
         self.signals = signals
         self.features = features
         self.label_ewm_span = label_ewm_span
-        self.window_aggregator_window = [int(2**i) for i in range(15)]
+        self.window_aggregator_window = [int(2 ** i) for i in range(15)]
         self.dflt_window_aggregator_func = ['sum']
         self.window_aggregators = [WindowAggregator(window, func) for (window, func) in product(self.window_aggregator_window, self.dflt_window_aggregator_func)]
         self.book_window_aggregators = [WindowAggregator(window, func) for (window, func) in product(self.window_aggregator_window, ['sum'])]
@@ -59,13 +59,14 @@ class LoadXY(ILoadXY):
         self.from_pickle = from_pickle
 
     def load_label(self, df: pd.DataFrame) -> (pd.DataFrame, pd.Series):
-        df_label = influx.query(query=influx.build_query(predicates={'_measurement': 'label', 'exchange': self.exchange.name, 'asset': self.sym.name,
-                                                                     # 'expiration_window': '180min', '_field': 'label'},
-                                                                     'ewm_span': self.label_ewm_span, '_field': 'forward_return_ewm'},
-                                                         start=self.start,
-                                                         end=self.end),
-                                return_more_tables=False
-                                )
+        res = query(meta={
+            'measurement_name': 'label', 'exchange': self.exchange, 'asset': self.sym.name,
+            # 'expiration_window': '180min', '_field': 'label'},
+            'information': 'forward_return_ewm',
+            'ewm_span': self.label_ewm_span},
+            start=self.start,
+            stop=self.end)
+        df_label = pd.DataFrame(res).set_index(0)
         df_label.columns = ['label']
         df_m = df.merge(df_label, how='outer', left_index=True, right_index=True).sort_index()
         df_m = self.curtail_nnan_front_end(df_m).ffill()
@@ -106,13 +107,14 @@ class LoadXY(ILoadXY):
             with open(os.path.join(Paths.data, 'df_book.p'), 'rb') as f:
                 df_book = pickle.load(f)
         else:
-            df_book = influx.query(query=influx.build_query(predicates={'_measurement': 'order book', 'exchange': self.exchange.name,
-                                                                    # 'asset': self.sym.name
-                                                                    },
-                                                                   start=self.start,
-                                                                   end=self.end),
-                                          return_more_tables=True
-                                          )
+            res = query(meta={
+                'measurement_name': 'order book', 'exchange': self.exchange,
+                'asset': self.sym
+            },
+                start=self.start,
+                stop=self.end
+            )
+            df_book = pd.DataFrame(res).set_index(0)
             with open(os.path.join(Paths.data, 'df_book.p'), 'wb') as f:
                 pickle.dump(df_book, f)
         df_book = self.reduce_feature_frame(df_book)
@@ -126,19 +128,20 @@ class LoadXY(ILoadXY):
             with open(os.path.join(Paths.data, 'df_trade_volume.p'), 'rb') as f:
                 df_trade_volume = pickle.load(f)
         else:
-            df_trade_volume = influx.query(query=influx.build_query(predicates={'_measurement': 'trade bars',
-                                                                               'exchange': self.exchange.name,
-                                                                               # 'asset': self.sym.name,
-                                                                               'information': 'volume'
-                                                                               },
-                                                                   start=self.start,
-                                                                   end=self.end),
-                                          return_more_tables=True
-                                          )
+            res = query(meta={
+                'measurement_name': 'trade bars',
+                'exchange': self.exchange,
+                # 'asset': self.sym.name,
+                'information': 'volume'
+            },
+                start=self.start,
+                to=self.end)
+            df_trade_volume = pd.DataFrame(res).set_index(0)
             with open(os.path.join(Paths.data, 'df_trade_volume.p'), 'wb') as f:
                 pickle.dump(df_trade_volume, f)
         df_trade_volume = self.reduce_feature_frame(df_trade_volume)
-        df_trade_volume = pd.concat([Upsampler(df_trade_volume[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in product(df_trade_volume.columns, self.window_aggregators)],
+        df_trade_volume = pd.concat(
+            [Upsampler(df_trade_volume[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in product(df_trade_volume.columns, self.window_aggregators)],
             sort=True, axis=1)
         df_trade_volume = self.reduce_feature_frame(df_trade_volume, skip_stationary=True)
 
@@ -147,20 +150,21 @@ class LoadXY(ILoadXY):
             with open(os.path.join(Paths.data, 'df_trade_imbalance.p'), 'rb') as f:
                 df_trade_imbalance = pickle.load(f)
         else:
-            df_trade_imbalance = influx.query(query=influx.build_query(predicates={'_measurement': 'trade bars',
-                                                                               'exchange': self.exchange.name,
-                                                                               # 'asset': self.sym.name,
-                                                                               'information': 'imbalance'
-                                                                               },
-                                                                    start=self.start,
-                                                                    end=self.end),
-                                           return_more_tables=True
-                                )
+            df_trade_imbalance = query(meta={
+                'measurement_name': 'trade bars',
+                'exchange': self.exchange,
+                # 'asset': self.sym.name,
+                'information': 'imbalance'
+            },
+                start=self.start,
+                to=self.end)
+            df_trade_imbalance = pd.DataFrame(res).set_index(0)
             with open(os.path.join(Paths.data, 'df_trade_imbalance.p'), 'wb') as f:
                 pickle.dump(df_trade_imbalance, f)
         df_trade_imbalance = self.reduce_feature_frame(df_trade_imbalance)
-        df_trade_imbalance = pd.concat([Upsampler(df_trade_imbalance[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in product(df_trade_imbalance.columns, self.window_aggregators)],
-                               sort=True, axis=1)
+        df_trade_imbalance = pd.concat(
+            [Upsampler(df_trade_imbalance[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in product(df_trade_imbalance.columns, self.window_aggregators)],
+            sort=True, axis=1)
         df_trade_imbalance = self.reduce_feature_frame(df_trade_imbalance, skip_stationary=True)
 
         logger.info('Fetching trade sequence')
@@ -168,20 +172,24 @@ class LoadXY(ILoadXY):
             with open(os.path.join(Paths.data, 'df_trade_sequence.p'), 'rb') as f:
                 df_trade_sequence = pickle.load(f)
         else:
-            df_trade_sequence = influx.query(query=influx.build_query(predicates={'_measurement': 'trade bars', 'exchange': self.exchange.name,
-                                                                              # 'asset': self.sym.name,
-                                                                              'information': 'sequence'},
-                                                                   start=self.start,
-                                                                   end=self.end),
-                                          return_more_tables=True
-                                          )
+            res = query(meta={
+                'measurement_name': 'trade bars',
+                'exchange': self.exchange,
+                # 'asset': self.sym.name,
+                'information': 'sequence'
+            },
+                start=self.start,
+                to=self.end
+            )
+            df_trade_sequence = pd.DataFrame(res).set_index(0)
             with open(os.path.join(Paths.data, 'df_trade_sequence.p'), 'wb') as f:
                 pickle.dump(df_trade_sequence, f)
-        df_trade_sequence = self.reduce_feature_frame(df_trade_sequence)
+            df_trade_sequence = self.reduce_feature_frame(df_trade_sequence)
 
-        df_trade_sequence = pd.concat(
-            [Upsampler(df_trade_sequence[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in product(df_trade_sequence.columns, self.window_aggregators)],
-            sort=True, axis=1)
+            df_trade_sequence = pd.concat(
+                [Upsampler(df_trade_sequence[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in
+                 product(df_trade_sequence.columns, self.window_aggregators)],
+                sort=True, axis=1)
         df_trade_sequence = self.reduce_feature_frame(df_trade_sequence, skip_stationary=True)
 
         logger.info('Trade book done')
@@ -193,6 +201,7 @@ class LoadXY(ILoadXY):
 
         df = df.iloc[df.isna().sum().max():]
         assert df.isna().sum().sum() == 0
+
         return df
 
     @staticmethod
@@ -205,8 +214,8 @@ class LoadXY(ILoadXY):
                 iloc_begin[i] = np.isnan(df.values[:, i]).sum()
         iloc_end = len(df) - np.argmax((~np.isnan(df.values[::-1])), axis=0)
         # exclude whose range is too small. series with high resolution will have small data cnt, still large range
-        mean_range = (iloc_end-iloc_begin).mean()
-        col_range = dict(zip(list(df.columns), (iloc_end-iloc_begin) > mean_range))
+        mean_range = (iloc_end - iloc_begin).mean()
+        col_range = dict(zip(list(df.columns), (iloc_end - iloc_begin) > mean_range))
 
         # ps_cnt_nonna = df.isna().sum().to_dict()
         # mean_cnt_non_na = np.mean(list(ps_cnt_nonna.values()))
@@ -221,11 +230,12 @@ class LoadXY(ILoadXY):
             if not res:
                 logger.warning(f'{ps.name} is not stationary. Excluding!')
             return res
+
         return df[[c for c in df.columns if f(df[c])]]
 
     def exclude_low_variance_cols(self, df):
         variances = df.var()
-        df = df.drop(variances[variances < variances.median()/2].index.tolist(), axis=1)
+        df = df.drop(variances[variances < variances.median() / 2].index.tolist(), axis=1)
         return df
 
     def assemble_frames(self):
@@ -239,7 +249,9 @@ class LoadXY(ILoadXY):
         self.df = self.exclude_low_variance_cols(self.df)
         self.df, self.ps_label = self.load_label(self.df)
         # ts_sample = self.load_sample_from_signals(self.df)  # samples
-        ts_sample = pd.Index(reduce(lambda res, item: res.union(set(item)), (EventExtractor(thresholds=[5, 5])(self.df[col], len(self.df) / 10) for col in self.df.columns if 'order book' in col and 'ethusd' in col), set()))
+        ts_sample = pd.Index(
+            reduce(lambda res, item: res.union(set(item)), (EventExtractor(thresholds=[5, 5])(self.df[col], len(self.df) / 10) for col in self.df.columns if 'order book' in col and 'ethusd' in col),
+                   set()))
         logger.info(f'len ts_sample: {len(ts_sample)} - {100 * len(ts_sample) / len(self.df)}% of df')
         if not ts_sample.empty:
             ix_sample = ts_sample.intersection(self.ps_label.index)

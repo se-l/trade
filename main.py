@@ -11,8 +11,8 @@ if os.environ.__contains__("PYTHONPATH") and len(os.environ["PYTHONPATH"]) > 0:
 else:
     os.environ["PYTHONPATH"] = lib_path.__str__()
 
-from trader.train.supervised import gen_model as train
-from common.modules import dotdict
+from trader.train.supervised.gen_model import gen_model
+from common.modules.dotdict import Dotdict
 # from trader.common.modules.Logger import Logger
 # Logger.init_log(os.path.join(lib_path, 'log_{}.log'.format(dt.datetime.today().date())))
 
@@ -25,13 +25,13 @@ def main(ctx: object) -> None:
         :param ctx: Context from Click.
         :return: None
         """
-    ctx.obj = dotdict(dict(
-        fn_params='ethusd',
+    ctx.obj = Dotdict(dict(
+        fn_params='ethusd_train',
         fn_settings='settings'
     ))
 
 
-main.add_command(train)
+main.add_command(gen_model)
 
 if __name__ == '__main__':
     main()

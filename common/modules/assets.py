@@ -1,8 +1,4 @@
-from .enum_utils import EnumStr
-from enum import Enum
-
-
-class Assets(EnumStr, Enum):
+class Assets:
     xbtusd = 'xbtusd'
     ethusd = 'ethusd'
     xrpz18 = 'xrpz18'

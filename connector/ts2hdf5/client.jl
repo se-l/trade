@@ -1,7 +1,7 @@
 __precompile__()
 
 module ClientTsHdf5
-# To Improve: Upsert - Assume sorted. Therefore, just append if last ts < first of new data. 
+
 using JLD2
 using Nettle
 using JSON3
@@ -23,7 +23,7 @@ def np_intersect1d(ar1, ar2, assume_unique=False, return_indices=False):
     return np.intersect1d(ar1, ar2, assume_unique=assume_unique, return_indices=return_indices)
 """
 
-function query(meta::AbstractDict; from="", to="9")
+function query(meta::AbstractDict; start="", stop="9")
     """ToDo accept DateTimes and filter vcat for that"""
     dir = dir_path(meta)
     if !ispath(dir)
@@ -32,7 +32,7 @@ function query(meta::AbstractDict; from="", to="9")
         mats = []
         for fn in readdir(dir)
             date = replace(fn, ".jld2" => "")
-            if from <= date <= to
+            if start <= date <= stop
                 push!(mats, load(joinpath(dir, fn), "data"))
             end
         end
@@ -67,11 +67,11 @@ function upsert(meta::AbstractDict, m_incoming; assume_sorted=true)
     end
 end
 
-function delete(meta::AbstractDict; from="", to="9")
+function delete(meta::AbstractDict; start="", stop="9")
     dir = dir_path(meta)
     for fn in readdir(dir)
         date = replace(fn, ".jld2" => "")
-        if from <= date <= to
+        if start <= date <= stop
             rm(joinpath(dir, date))
         end
     end
@@ -122,7 +122,7 @@ end
 # using Dates
 # ClientTsHdf5.upsert(Dict("a"=>2), [[DateTime(2022, 1, i, 1, 1, i) for i in 1:3] [2,3,4]])
 # upsert(Dict("a"=>2), [[DateTime(2022, 1, 1, 1, 1, i) for i in 3:5] [2,3,4]])
-# query(Dict("a"=>2), from="2022-01-01")
+# query(Dict("a"=>2), start="2022-01-01")
 # delete(Dict("a"=>2))
 # println(ClientTsHdf5.get(Dict("a"=>1)))
 # ClientTsHdf5.query(Dict("a"=>2))

@@ -14,7 +14,6 @@ from common.paths import Paths
 from common.refdata import tick_size
 from common.utils.util_func import rolling_window, reduce_to_intersect_ts
 from common.utils.normalize import Normalize
-from connector.influxdb.influxdb_wrapper import InfluxClientWrapper as Influx
 from trader.data_loader.raw_data_fetcher.crypto.bitmex.convert_bitmex_raw_to_qc import ConvertBitmexToQC
 from common.modules.logger import logger
 
@@ -25,7 +24,6 @@ class OrderBookFeatures:
         s.ts_start = params.data_start
         s.ts_end = params.data_end
         s.req_feats = None
-        s.influx = Influx()
         s.normalize = normalize or Normalize(False, False)
         s.schema = ['asset', 'ts_start', 'ts_end', 'price_level', 'prev_price', 'next_price', 'tick', 'period_length',
                     'mean_ask_size', 'mean_bid_size', 'count',

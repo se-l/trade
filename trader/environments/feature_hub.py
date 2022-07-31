@@ -11,6 +11,8 @@ import pandas as pd
 from collections import defaultdict
 from functools import partial, reduce, lru_cache
 from typing import Union
+
+from connector.ts2hdf5.client import upsert
 from trader.backtest.order import Order
 from trader.backtest.strategy_info import Strategy
 from common.globals import OHLC, OHLCV
@@ -23,7 +25,6 @@ from common.refdata.named_tuples import nda_schema
 from common.utils.normalize import Normalize
 from common.utils.pandas_frame_plus import PandasFramePlus
 from common.utils.util_func import to_list, resolve_col_name, get_model_features, rolling_window, standard_params_setup, downside_deviation, SeriesTickType
-from connector.influxdb.influxdb_wrapper import InfluxClientWrapper as Influx
 from common.utils.util_func import reduce_to_intersect_ts
 from common.modules.enums import Direction, Exchange
 from common.modules.logger import logger
@@ -325,25 +326,27 @@ class FeatureHub:
 
     def p_model(s, *args, **kwargs) -> np.ndarray:
         """
-        (1) pre-computed. load from Influx
+        (1) pre-computed. load from TS Data Client
         (2) Reference model in dependencies and compute with inputs from pdp
         """
         # return s.load_p_model(kwargs.get('model_name')) or s._predict_p_model(kwargs.get('model_name'))
         return s._predict_p_model(kwargs.get('model_name'))
 
-    def load_p_model(s, model_name, source='influx'):
-        if source == 'influx' and False:  # model_name_present():
-            return Influx().load_p(s.params.asset, model_name, ex=s.params.ex_entry, from_ts=s.params.ts_start, to_ts=s.params.ts_end, load_from_training_set=s.params.load_from_training_set)
+    def load_p_model(s, model_name, source='client'):
+        pass
+        # if source == 'client' and False:  # model_name_present():
+        #     return Client.load_p(s.params.asset, model_name, ex=s.params.ex_entry, from_ts=s.params.ts_start, to_ts=s.params.ts_end, load_from_training_set=s.params.load_from_training_set)
 
     def _predict_p_model(s, model_name: str) -> np.ndarray:
         model_dct = s.dependencies.get('models', {}).get(model_name)
-        load_model_from_influx = s.dependencies.get('load_model_from_influx', False)
-        if load_model_from_influx:
-            m2m_influx = s.dependencies.get('m2m_influx', {})
-            res_ts = Influx().load_p(asset=s.params.asset, model=m2m_influx.get(model_name, model_name), ex=s.params.ex_entry, from_ts=s.pdp['ts'].iloc[0], to_ts=s.pdp['ts'].iloc[-1])
-            res = res_ts.reset_index()['p'].values
-            diff = len(s.pdp) - len(res)
-            return np.concatenate([res, res[-diff:]])
+        load_model_from_client = s.dependencies.get('load_model_from_client', False)
+        if False and load_model_from_client:
+            pass
+            # m2m_client = s.dependencies.get('m2m_client', {})
+            # res_ts = Client.load_p(asset=s.params.asset, model=m2m_client.get(model_name, model_name), ex=s.params.ex_entry, from_ts=s.pdp['ts'].iloc[0], to_ts=s.pdp['ts'].iloc[-1])
+            # res = res_ts.reset_index()['p'].values
+            # diff = len(s.pdp) - len(res)
+            # return np.concatenate([res, res[-diff:]])
         else:
             feature_names = list(set.union(*[set(get_model_features(m)) for m in model_dct.values()]))
             # with Pool(processes=min((multiprocessing.cpu_count() // 2)-1, len(model_dct.keys()))) as p:
@@ -479,7 +482,7 @@ class FeatureHub:
         kwargs.update(s.trade_metric_feat_name2kwargs(kwargs.get('out_curve')))
         col_name = f'trade.{kwargs.get("metric")}_{kwargs.get("direction")}'
         nda = np.full(len(s.pdp), np.nan)
-        nda[kwargs.get('d_tick')-1:] = np.sum(rolling_window(s.pdp[col_name], kwargs.get('d_tick')), axis=1)
+        nda[kwargs.get('d_tick') - 1:] = np.sum(rolling_window(s.pdp[col_name], kwargs.get('d_tick')), axis=1)
         return nda
         # s.pdp[kwargs.get('out_curve')] = np.nan
         # s.pdp[kwargs.get('out_curve')].iloc[kwargs.get('d_tick')-1:] = np.sum(rolling_window(s.pdp[col_name], kwargs.get('d_tick')), axis=1)
@@ -532,15 +535,12 @@ class FeatureHub:
         pdf[Cr.rl_action_hold] = s.pdp[Cr[Cr.rl_action_hold]]
         pdf[Cr.rl_action_exit] = s.pdp[Cr[Cr.rl_action_exit]]
         # s.db_insert_preds(pdf, 'eurusd', measurement='unbinned_research_entry')
-        Influx().write_pdf(pdf,
-                           measurement='research_entry_unbinned',
-                           tags=dict(
-                               asset='eurusd',
-                               ex=s.params.ex,
-                           ),
-                           field_columns=pdf.columns,
-                           # tag_columns=[]
-                           )
+
+        upsert(meta={
+            'measurement': 'research_entry_unbinned',
+            'asset': 'eurusd',
+            'ex': s.params.ex,
+        }, data=pdf)
 
     def copy_extract(s, start: Union[int, datetime.datetime], end: Union[int, datetime.datetime] = None):
         start = s.to_ix(start) if isinstance(start, datetime.datetime) else start
@@ -551,15 +551,12 @@ class FeatureHub:
                           )
 
     def store_arr(s, pdf, fields):
-        Influx().write_pdf(pdf,
-                           measurement='backtest_curves',
-                           tags=dict(
-                               asset=s.params.asset.lower(),
-                               ex=s.params.ex,
-                               backtest_time=s.params.backtest_time
-                           ),
-                           field_columns=fields
-                           )
+        upsert(meta={
+            'measurement': 'backtest_curves',
+            'asset': s.params.asset.lower(),
+            'ex': s.params.ex,
+            'backtest_time': s.params.backtest_time,
+        }, data=pdf[fields])
 
     def ts(s):
         s.pdp[Cr.ts] = pd.to_datetime(s.data.get('mid')['ts'])

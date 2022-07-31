@@ -1,8 +1,4 @@
-from .enum_utils import EnumStr
-from enum import Enum
-
-
-class Exchange(EnumStr, Enum):
+class Exchange:
     bitmex = 'bitmex'
     bitfinex = 'bitfinex'
     fxcm = 'fxcm'

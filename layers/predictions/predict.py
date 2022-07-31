@@ -7,16 +7,16 @@ import pandas as pd
 import lightgbm as lgb
 
 from common.modules.logger import logger
+from connector.ts2hdf5.client import query
 from layers.features.upsampler import Upsampler
 from typing import List
-from connector.influxdb.influxdb_wrapper import influx
 from itertools import product
 from functools import reduce
 from sklearn.model_selection import KFold
 from common.modules.assets import Assets
 from common.modules.exchange import Exchange
 from common.utils.util_func import is_stationary, ex
-from connector.influxdb.influxdb_wrapper import influx, WindowAggregator
+from connector.influxdb.influxdb_wrapper import WindowAggregator
 from common.paths import Paths
 
 
@@ -61,7 +61,7 @@ class Predict:
             for c in feats:
                 logger.info(f'Loading {c}')
                 try:
-                    df = influx.query(query=influx.build_query(predicates=self.name2tags(c), start=self.start, end=self.end), return_more_tables=True)
+                    df = pd.DataFrame(query(meta=self.name2tags(c), start=self.start, to=self.end)).set_index(0)
                 except Exception as e:
                     logger.info(e)
                     logger.info(c)
