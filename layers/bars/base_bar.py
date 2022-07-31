@@ -3,7 +3,6 @@ import pandas as pd
 from common.modules.logger import logger
 from abc import abstractmethod
 from common.modules.enums import Exchange, Assets
-from connector.npy.client import npy_client
 from julia import Main
 Main.eval('''
 include("C://repos//trade//connector//ts2hdf5//client.jl")
