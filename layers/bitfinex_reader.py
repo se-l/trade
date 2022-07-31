@@ -63,7 +63,7 @@ class BitfinexReader:
     @classmethod
     def load_quotes(cls, sym: str, start: datetime.datetime, end: datetime.datetime):
         df = cls.load(start, end, os.path.join(cls.dir_tick, sym.lower()), fn_key='quote')
-        if not df:
+        if df is None or df.empty:
             return None
         df.columns = cls.schema_quote
         # amount > 0: Bid < 0 Ask. count 0: deleted

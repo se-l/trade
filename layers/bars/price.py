@@ -41,6 +41,7 @@ if __name__ == '__main__':
                     exchange=exchange,
                     sym=asset,
                     start=datetime.datetime(2022, 2, 7),
+                    # end=datetime.datetime(2022, 2, 8),
                     end=datetime.datetime(2022, 3, 12),
                     unit=asset,
                     unit_size=params.get('unit_size'),

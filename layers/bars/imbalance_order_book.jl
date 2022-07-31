@@ -6,7 +6,7 @@ import YAML
 
 push!(LOAD_PATH, "C://repos//trade//layers//bars")
 import OrderBook
-
+include("C://repos//trade//common//utils.jl")
 include("C://repos//trade//connector//ts2hdf5//client.jl")
 const Client = ClientTsHdf5
 
@@ -21,10 +21,6 @@ push!(pyimport("sys")."path", "C://repos//trade//common//modules")
 # logger = pyimport("logger").logger
 push!(pyimport("sys")."path", "C://repos//trade//layers")
 BitfinexReader = pyimport("bitfinex_reader").BitfinexReader
-
-
-ffill(v) = return v[accumulate(max, [i*!(ismissing(v[i]) | isnan(v[i])) for i in 1:length(v)], init=1)]
-isna(v) = return map((i)->(ismissing(i) | isnan(i)), v)
 
 function ix_every_delta(arr, delta)  # no NANs here.
     cumsum_ = vcat([0], cumsum(arr[1:end-1] - arr[2:end]))
@@ -54,7 +50,7 @@ function ix_every_delta(arr, delta)  # no NANs here.
 end
 
 function invert_lt_zero_ratio!(v)
-    ix_ask_greater = v .< 1  # why 1 not 0
+    ix_ask_greater = v .< 1
     v[ix_ask_greater] .= 1 ./ v[ix_ask_greater]
     return v
 end
@@ -89,6 +85,10 @@ function main()
     @time begin
     settings = YAML.load_file(Paths.layer_settings)
     for exchange in keys(settings)
+        # exchange="bitfinex"
+        # asset="ethusd"
+        # i=0
+        # params = settings[exchange][asset]
         println("$(exchange)")
         for (asset, params) in pairs(settings[exchange])
             if asset != "ethusd"
@@ -97,7 +97,8 @@ function main()
             println("Loading order book for $(exchange) - $(asset)")
             params = get(params, "order book", Dict())
             delta_size_ratio = get(params, "delta_size_ratio", 0)
-            start = Date(2022, 4, 20)
+            # start = Date(2022, 4, 20)
+            start = Date(2022, 2, 7)
             end_ = Date(2022, 5, 29)
             for i = 0:Dates.value(end_ - start)
                 dt = datetime.datetime.fromisoformat(string(start)) + datetime.timedelta(days=i)
@@ -148,6 +149,8 @@ function main()
 
                 count_ratio = m_count[:, 1] ./ m_count[:, 2]
                 size_ratio = abs.(m_size[:, 1]) ./ m_size[:, 2]  # bid|buy / ask|sell
+                v_bid_gt_ask = ifelse.(abs.(m_size[:, 1]) .> m_size[:, 2], -1,  1)
+                
                 v_count_ratio = invert_lt_zero_ratio!(count_ratio)
                 v_size_ratio = invert_lt_zero_ratio!(size_ratio)
                 v_size_net = m_size[:, 1] + m_size[:, 2]  # bid - ask
@@ -160,8 +163,8 @@ function main()
                         reduced to # events $(length(v_ts)) -> # unique events/ts: $(length(ix_events))")
                 # somehow need to ensure here only 1 value per timestamp
                 for (information, v) in pairs(Dict(
-                    "bid_buy_size_imbalance_ratio" => v_size_ratio,
-                    "bid_buy_count_imbalance_ratio" => v_count_ratio,
+                    "bid_buy_size_imbalance_ratio" => v_size_ratio .* v_bid_gt_ask,  # encode side
+                    "bid_buy_count_imbalance_ratio" => v_count_ratio .* v_bid_gt_ask,
                     "bid_buy_size_imbalance_net" => v_size_net,
                     "bid_buy_count_imbalance_net" => v_count_net,
                 ))
