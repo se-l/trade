@@ -59,14 +59,13 @@ class LoadXY(ILoadXY):
         self.from_pickle = from_pickle
 
     def load_label(self, df: pd.DataFrame) -> (pd.DataFrame, pd.Series):
-        res = query(meta={
-            'measurement_name': 'label', 'exchange': self.exchange, 'asset': self.sym.name,
-            # 'expiration_window': '180min', '_field': 'label'},
-            'information': 'forward_return_ewm',
+        df_label = query(meta={
+            'measurement_name': 'label', 'exchange': self.exchange, 'asset': self.sym,
+            # 'expiration_window': '180min',},
+            'col': 'forward_return_ewm',
             'ewm_span': self.label_ewm_span},
-            start=self.start,
-            stop=self.end)
-        df_label = pd.DataFrame(res).set_index(0)
+            start=self.start.date(),
+            stop=self.end.date())
         df_label.columns = ['label']
         df_m = df.merge(df_label, how='outer', left_index=True, right_index=True).sort_index()
         df_m = self.curtail_nnan_front_end(df_m).ffill()
@@ -92,9 +91,9 @@ class LoadXY(ILoadXY):
         pass
 
     def reduce_feature_frame(self, df: pd.DataFrame, skip_stationary=False) -> pd.DataFrame:
-        if not skip_stationary:
+        if not skip_stationary:  # this is too slow
             df = self.exclude_non_stationary(df)
-        df = self.exclude_too_little_data(df)
+        # df = self.exclude_too_little_data(df)  # this has an error in case of no NaNs
         # ffill after curtailing to avoid arriving at incorrect states for timeframes where information has simply not been loaded
         df = self.curtail_nnan_front_end(df).ffill()
         # df = self.exclude_too_little_data(df)
@@ -107,39 +106,39 @@ class LoadXY(ILoadXY):
             with open(os.path.join(Paths.data, 'df_book.p'), 'rb') as f:
                 df_book = pickle.load(f)
         else:
-            res = query(meta={
+            df_book = query(meta={
                 'measurement_name': 'order book', 'exchange': self.exchange,
                 'asset': self.sym
             },
-                start=self.start,
-                stop=self.end
+                start=self.start.date(),
+                stop=self.end.date()
             )
-            df_book = pd.DataFrame(res).set_index(0)
             with open(os.path.join(Paths.data, 'df_book.p'), 'wb') as f:
                 pickle.dump(df_book, f)
-        df_book = self.reduce_feature_frame(df_book)
+        df_book = self.reduce_feature_frame(df_book, skip_stationary=True)
         df_book = pd.concat([Upsampler(df_book[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in product(df_book.columns, self.book_window_aggregators)],
                             sort=True, axis=1)
-        df_book = df_book.resample(rule='15S').max()
-        df_book = self.reduce_feature_frame(df_book, skip_stationary=True)
+        # This is wrong. df book is directional. cant do max....
+        # df_book = df_book.resample(rule='15S').max()
+        # df_book = self.reduce_feature_frame(df_book, skip_stationary=True)
 
         logger.info('Fetching Trade volume')
         if self.from_pickle:
             with open(os.path.join(Paths.data, 'df_trade_volume.p'), 'rb') as f:
                 df_trade_volume = pickle.load(f)
         else:
-            res = query(meta={
+            df_trade_volume = query(meta={
                 'measurement_name': 'trade bars',
                 'exchange': self.exchange,
-                # 'asset': self.sym.name,
+                'asset': self.sym,
                 'information': 'volume'
             },
-                start=self.start,
-                to=self.end)
-            df_trade_volume = pd.DataFrame(res).set_index(0)
+                start=self.start.date(),
+                stop=self.end.date()
+            )
             with open(os.path.join(Paths.data, 'df_trade_volume.p'), 'wb') as f:
                 pickle.dump(df_trade_volume, f)
-        df_trade_volume = self.reduce_feature_frame(df_trade_volume)
+        df_trade_volume = self.reduce_feature_frame(df_trade_volume, skip_stationary=True)
         df_trade_volume = pd.concat(
             [Upsampler(df_trade_volume[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in product(df_trade_volume.columns, self.window_aggregators)],
             sort=True, axis=1)
@@ -153,15 +152,14 @@ class LoadXY(ILoadXY):
             df_trade_imbalance = query(meta={
                 'measurement_name': 'trade bars',
                 'exchange': self.exchange,
-                # 'asset': self.sym.name,
+                'asset': self.sym,
                 'information': 'imbalance'
             },
-                start=self.start,
-                to=self.end)
-            df_trade_imbalance = pd.DataFrame(res).set_index(0)
+                start=self.start.date(),
+                stop=self.end.date())
             with open(os.path.join(Paths.data, 'df_trade_imbalance.p'), 'wb') as f:
                 pickle.dump(df_trade_imbalance, f)
-        df_trade_imbalance = self.reduce_feature_frame(df_trade_imbalance)
+        df_trade_imbalance = self.reduce_feature_frame(df_trade_imbalance, skip_stationary=True)
         df_trade_imbalance = pd.concat(
             [Upsampler(df_trade_imbalance[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in product(df_trade_imbalance.columns, self.window_aggregators)],
             sort=True, axis=1)
@@ -172,19 +170,18 @@ class LoadXY(ILoadXY):
             with open(os.path.join(Paths.data, 'df_trade_sequence.p'), 'rb') as f:
                 df_trade_sequence = pickle.load(f)
         else:
-            res = query(meta={
+            df_trade_sequence = query(meta={
                 'measurement_name': 'trade bars',
                 'exchange': self.exchange,
-                # 'asset': self.sym.name,
+                'asset': self.sym,
                 'information': 'sequence'
             },
-                start=self.start,
-                to=self.end
+                start=self.start.date(),
+                stop=self.end.date()
             )
-            df_trade_sequence = pd.DataFrame(res).set_index(0)
             with open(os.path.join(Paths.data, 'df_trade_sequence.p'), 'wb') as f:
                 pickle.dump(df_trade_sequence, f)
-            df_trade_sequence = self.reduce_feature_frame(df_trade_sequence)
+            df_trade_sequence = self.reduce_feature_frame(df_trade_sequence, skip_stationary=True)
 
             df_trade_sequence = pd.concat(
                 [Upsampler(df_trade_sequence[c]).upsample(aggregate_window.window, aggregate_window.aggregator) for (c, aggregate_window) in
@@ -267,7 +264,7 @@ if __name__ == '__main__':
         exchange=exchange,
         sym=sym,
         start=datetime.datetime(2022, 2, 7),
-        end=datetime.datetime(2022, 3, 13),
+        end=datetime.datetime(2022, 2, 13),
         # start=datetime.datetime(2022, 2, 14),
         # end=datetime.datetime(2022, 3, 1),
     )

@@ -32,6 +32,7 @@ class SequenceBar(BaseBar):
         df['measurable_cum_up'] = df['measurable_cum_up'].ffill().fillna(0)
         bars = []
         while True:
+            # refactor to Julia and stop repeatedly mutating the entire array
             iloc_down = np.argmax(df['measurable_cum_down'].values >= self.unit_size)
             iloc_up = np.argmax(df['measurable_cum_up'].values >= self.unit_size)
             if iloc_up == iloc_down == 0:

@@ -24,12 +24,12 @@ from layers.predictions.sample_weights import SampleWeights
 class EstimateQuantiles(EstimateBase):  # inherit some interface
     """Estimate side by:
     - Loading label ranges from inlux
-    - Samples are events where series diverges from expectation: load from inlux
+    - Samples are events where series diverges from expectation
     - Weights: Less unique sample -> lower weight
     - CV. Embargo area
     - Store in Experiment
     - Generate feature importance plot
-    - ToInflux: Signed estimates
+    - Store: Signed estimates
     """
 
     def __init__(self, sym: Assets, load_xy=None, quantiles=None):

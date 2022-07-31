@@ -28,13 +28,13 @@ from layers.predictions.sample_weights import SampleWeights
 
 class EstimateSide(EstimateBase):
     """Estimate side by:
-    - Loading label ranges from inlux
-    - Samples are events where series diverges from expectation: load from inlux
+    - Loading label ranges
+    - Samples are events where series diverges from expectation
     - Weights: Less unique sample -> lower weight
     - CV. Embargo area
     - Store in Experiment
     - Generate feature importance plot
-    - ToInflux: Signed estimates
+    - Store: Signed estimates
     """
 
     def __init__(self, sym: Assets, load_xy=None, thresholds=(1.005, 0.995)):
